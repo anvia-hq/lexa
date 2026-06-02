@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](Cargo.toml)
 [![MCP](https://img.shields.io/badge/MCP-ready-4b5563.svg)](#mcp)
-[![Status](https://img.shields.io/badge/status-early--stage-yellow.svg)](#development)
+[![Status](https://img.shields.io/badge/status-ready%20to%20use-brightgreen.svg)](#development)
 
 Fast local code intelligence for humans and AI agents.
 
@@ -147,4 +147,4 @@ cargo test
 cargo build --release
 ```
 
-Lexa is early-stage software. CLI and MCP names are usable, but graph format and output details may still evolve.
+Lexa is ready to use. Graph format and output details may still evolve as the project grows.

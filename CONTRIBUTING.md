@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Lexa. This project is early-stage, so small, focused contributions are the easiest to review.
+Thanks for helping improve Lexa. This project is ready to use and moving quickly, so small, focused contributions are the easiest to review.
 
 ## Getting Started
 
