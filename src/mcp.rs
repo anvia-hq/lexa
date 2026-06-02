@@ -22,6 +22,17 @@ struct ToolOutput {
     structured: Value,
 }
 
+struct McpMessage {
+    body: Vec<u8>,
+    framing: StdioFraming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StdioFraming {
+    ContentLength,
+    NewlineDelimited,
+}
+
 impl ToolOutput {
     fn new(text: String, structured: Value) -> Self {
         Self { text, structured }
@@ -45,10 +56,14 @@ impl McpServer {
         let mut writer = stdout.lock();
 
         while let Some(message) = read_message(&mut reader)? {
-            let request: Value = match serde_json::from_slice(&message) {
+            let request: Value = match serde_json::from_slice(&message.body) {
                 Ok(value) => value,
                 Err(err) => {
-                    write_response(&mut writer, &json_rpc_error(None, -32700, &err.to_string()))?;
+                    write_response(
+                        &mut writer,
+                        message.framing,
+                        &json_rpc_error(None, -32700, &err.to_string()),
+                    )?;
                     continue;
                 }
             };
@@ -58,6 +73,7 @@ impl McpServer {
                 if id.is_some() {
                     write_response(
                         &mut writer,
+                        message.framing,
                         &json_rpc_error(id, -32600, "missing JSON-RPC method"),
                     )?;
                 }
@@ -67,7 +83,7 @@ impl McpServer {
             let Some(response) = self.handle(method, id, request.get("params")) else {
                 continue;
             };
-            write_response(&mut writer, &response)?;
+            write_response(&mut writer, message.framing, &response)?;
         }
 
         Ok(())
@@ -721,14 +737,17 @@ impl McpServer {
     }
 }
 
-fn read_message(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
+fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
     let Some(first_line) = read_non_empty_line(reader)? else {
         return Ok(None);
     };
 
     let first_trimmed = trim_line_end(&first_line);
     if first_trimmed.trim_start().starts_with(['{', '[']) {
-        return Ok(Some(first_line.into_bytes()));
+        return Ok(Some(McpMessage {
+            body: first_line.into_bytes(),
+            framing: StdioFraming::NewlineDelimited,
+        }));
     }
 
     let mut content_length = parse_content_length_header(first_trimmed)?;
@@ -750,7 +769,10 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
     let len = content_length.context("missing Content-Length")?;
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
-    Ok(Some(body))
+    Ok(Some(McpMessage {
+        body,
+        framing: StdioFraming::ContentLength,
+    }))
 }
 
 fn read_non_empty_line(reader: &mut impl BufRead) -> Result<Option<String>> {
@@ -787,10 +809,18 @@ fn requested_protocol_version(params: Option<&Value>) -> &str {
         .unwrap_or(DEFAULT_MCP_PROTOCOL_VERSION)
 }
 
-fn write_response(writer: &mut impl Write, response: &Value) -> Result<()> {
+fn write_response(writer: &mut impl Write, framing: StdioFraming, response: &Value) -> Result<()> {
     let body = serde_json::to_vec(response)?;
-    write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
-    writer.write_all(&body)?;
+    match framing {
+        StdioFraming::ContentLength => {
+            write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
+            writer.write_all(&body)?;
+        }
+        StdioFraming::NewlineDelimited => {
+            writer.write_all(&body)?;
+            writer.write_all(b"\n")?;
+        }
+    }
     writer.flush()?;
     Ok(())
 }
@@ -1074,8 +1104,9 @@ mod tests {
         let mut reader = Cursor::new(br#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#.to_vec());
         let message = read_message(&mut reader).unwrap().unwrap();
 
+        assert_eq!(message.framing, StdioFraming::NewlineDelimited);
         assert_eq!(
-            serde_json::from_slice::<Value>(&message).unwrap(),
+            serde_json::from_slice::<Value>(&message.body).unwrap(),
             json!({"jsonrpc":"2.0","id":0,"method":"initialize"})
         );
     }
@@ -1090,7 +1121,35 @@ mod tests {
 
         let message = read_message(&mut reader).unwrap().unwrap();
 
-        assert_eq!(message, body);
+        assert_eq!(message.framing, StdioFraming::ContentLength);
+        assert_eq!(message.body, body);
+    }
+
+    #[test]
+    fn write_response_uses_newline_delimited_framing() {
+        let mut output = Vec::new();
+        let response = json!({"jsonrpc":"2.0","id":0,"result":{}});
+
+        write_response(&mut output, StdioFraming::NewlineDelimited, &response).unwrap();
+
+        let mut expected = serde_json::to_vec(&response).unwrap();
+        expected.push(b'\n');
+
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn write_response_uses_content_length_framing() {
+        let mut output = Vec::new();
+        let response = json!({"jsonrpc":"2.0","id":0,"result":{}});
+
+        write_response(&mut output, StdioFraming::ContentLength, &response).unwrap();
+
+        let body = serde_json::to_vec(&response).unwrap();
+        let mut expected = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
+        expected.extend_from_slice(&body);
+
+        assert_eq!(output, expected);
     }
 
     #[test]
