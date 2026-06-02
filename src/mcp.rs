@@ -8,6 +8,8 @@ use crate::engine::{Engine, SearchOptions};
 use crate::snapshot;
 use crate::store;
 
+const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
 pub struct McpServer {
     engine: Engine,
     root: PathBuf,
@@ -74,11 +76,12 @@ impl McpServer {
     fn handle(&mut self, method: &str, id: Option<Value>, params: Option<&Value>) -> Option<Value> {
         match method {
             "initialize" => id.map(|id| {
+                let protocol_version = requested_protocol_version(params);
                 json!({
                     "jsonrpc": "2.0",
                     "id": id,
                     "result": {
-                        "protocolVersion": "2024-11-05",
+                        "protocolVersion": protocol_version,
                         "capabilities": { "tools": { "listChanged": false } },
                         "serverInfo": { "name": "lexa", "version": env!("CARGO_PKG_VERSION") }
                     }
@@ -719,7 +722,16 @@ impl McpServer {
 }
 
 fn read_message(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
-    let mut content_length = None;
+    let Some(first_line) = read_non_empty_line(reader)? else {
+        return Ok(None);
+    };
+
+    let first_trimmed = trim_line_end(&first_line);
+    if first_trimmed.trim_start().starts_with(['{', '[']) {
+        return Ok(Some(first_line.into_bytes()));
+    }
+
+    let mut content_length = parse_content_length_header(first_trimmed)?;
     loop {
         let mut line = String::new();
         let read = reader.read_line(&mut line)?;
@@ -730,10 +742,8 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
         if trimmed.is_empty() {
             break;
         }
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                content_length = Some(value.trim().parse::<usize>()?);
-            }
+        if let Some(len) = parse_content_length_header(trimmed)? {
+            content_length = Some(len);
         }
     }
 
@@ -741,6 +751,40 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
     Ok(Some(body))
+}
+
+fn read_non_empty_line(reader: &mut impl BufRead) -> Result<Option<String>> {
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            return Ok(None);
+        }
+        if !trim_line_end(&line).is_empty() {
+            return Ok(Some(line));
+        }
+    }
+}
+
+fn trim_line_end(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
+fn parse_content_length_header(line: &str) -> Result<Option<usize>> {
+    let Some((name, value)) = line.split_once(':') else {
+        return Ok(None);
+    };
+    if name.eq_ignore_ascii_case("content-length") {
+        return Ok(Some(value.trim().parse::<usize>()?));
+    }
+    Ok(None)
+}
+
+fn requested_protocol_version(params: Option<&Value>) -> &str {
+    params
+        .and_then(|params| params.get("protocolVersion"))
+        .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_MCP_PROTOCOL_VERSION)
 }
 
 fn write_response(writer: &mut impl Write, response: &Value) -> Result<()> {
@@ -1018,4 +1062,41 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
         year += 1;
     }
     (year, month as u32, day as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_message_accepts_newline_delimited_json() {
+        let mut reader = Cursor::new(br#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#.to_vec());
+        let message = read_message(&mut reader).unwrap().unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&message).unwrap(),
+            json!({"jsonrpc":"2.0","id":0,"method":"initialize"})
+        );
+    }
+
+    #[test]
+    fn read_message_accepts_content_length_framing() {
+        let body = br#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#;
+        let framed = format!("Content-Length: {}\r\n\r\n", body.len());
+        let mut input = framed.into_bytes();
+        input.extend_from_slice(body);
+        let mut reader = Cursor::new(input);
+
+        let message = read_message(&mut reader).unwrap().unwrap();
+
+        assert_eq!(message, body);
+    }
+
+    #[test]
+    fn initialize_uses_requested_protocol_version() {
+        let params = json!({ "protocolVersion": "2025-11-25" });
+
+        assert_eq!(requested_protocol_version(Some(&params)), "2025-11-25");
+    }
 }
