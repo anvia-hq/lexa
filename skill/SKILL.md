@@ -1,0 +1,223 @@
+---
+name: lexa
+description: Use Lexa for fast local codebase intelligence. Trigger when a user wants to explore, search, map, read, patch, pipeline, or maintain a project with Lexa's CLI or MCP server; when they ask for symbol lookup, dependency tracing, file outlines, safe line-based edits, or agent-friendly code context.
+---
+
+# Lexa
+
+Use Lexa when working inside a codebase that benefits from fast local indexing, symbol lookup, text search, dependency tracing, hash-aware reads, or safe line-based patches.
+
+## Check Availability
+
+First check whether `lexa` is installed:
+
+```bash
+lexa --version
+```
+
+If unavailable and the Lexa repository is present, install it:
+
+```bash
+cargo install --path /path/to/lexa --force
+```
+
+If unavailable and the repository path is unknown, ask the user for the Lexa repository or binary path.
+
+## Index The Project
+
+From the target project root:
+
+```bash
+lexa index .
+```
+
+Lexa writes `.lexa/graph.lexa` by default. Use a custom graph path when the user wants the index outside the project:
+
+```bash
+lexa --graph /tmp/project.graph.lexa index .
+```
+
+Use `--no-graph` only for temporary in-memory sessions.
+
+## Exploration Workflow
+
+Start broad, then narrow:
+
+```bash
+lexa status
+lexa map
+lexa find-path "<partial-path>"
+lexa outline <path>
+lexa search "<query>" --scope
+lexa find-symbol <name>
+lexa trace-deps <path>
+```
+
+Prefer Lexa over repeated filesystem scans when the question is about indexed files, symbols, imports, or recurring text search. Use `rg` directly when the user needs raw repository text search, unindexed generated files, or exact grep-style behavior.
+
+## CLI Command Reference
+
+All CLI commands:
+
+| Command | Use |
+| --- | --- |
+| `index <path>` | Index a project and write the graph |
+| `map [path]` | Show indexed files with language, lines, and symbols |
+| `list [path]` | List immediate children of an indexed directory |
+| `find-path <pattern>` | Fuzzy path search |
+| `search <query>` | Search indexed text |
+| `outline <path>` | Show imports and symbols for one file |
+| `find-symbol <name>` | Find symbol definitions |
+| `find-word <word>` | Find exact word or identifier occurrences |
+| `trace-deps <path>` | Trace import dependencies |
+| `recent` | Show recently modified files |
+| `find-callers <name>` | Find non-definition call sites |
+| `brief <task>` | Compose task-focused context |
+| `changes [since]` | Show changed files since a sequence number |
+| `read <path>` | Read a file, line range, or hash |
+| `patch <path> <op>` | Apply `replace`, `insert`, or `delete` edits |
+| `glob <pattern>` | Match indexed paths with a glob |
+| `status` | Show index status |
+| `watch [path]` | Watch files and refresh the graph |
+| `pipeline <pipeline>` | Run composable query stages |
+| `mcp [path]` | Start the MCP server over stdio |
+
+Important search flags:
+
+```bash
+lexa search "<query>" --max 20
+lexa search "<query>" --regex
+lexa search "<query>" --scope
+lexa search "<query>" --compact
+lexa search "<query>" --paths-only
+lexa search "<query>" --path-glob "**/*.{ts,tsx}"
+```
+
+## Pipelines
+
+Use `pipeline` to chain simple query operations:
+
+```bash
+lexa pipeline 'glob src/**/*.rs | search Engine | limit 10'
+lexa pipeline 'fuzzy parser | outline'
+lexa pipeline 'glob src/**/*.rs | deps'
+lexa pipeline 'glob src/**/*.rs | count'
+```
+
+Pipeline stages:
+
+| Stage | Use |
+| --- | --- |
+| `find <glob>` / `glob <glob>` | Start from glob-matched files |
+| `fuzzy <query>` / `find_path <query>` | Start from fuzzy path matches |
+| `search <query>` | Search all files or current file set |
+| `filter <text>` | Filter current files/results by text |
+| `outline` | Render outlines for current files |
+| `deps` | Render dependencies for current files |
+| `read` | Render contents for current files |
+| `sort` | Sort current files/results |
+| `limit [n]` | Truncate current files/results, default `10` |
+| `count` | Count current files/results |
+
+## Reading Files
+
+Read focused line ranges instead of entire large files:
+
+```bash
+lexa read <path> -L 20-80
+```
+
+Use hashes before edits or when avoiding stale reads:
+
+```bash
+lexa read <path> --hash
+lexa read <path> --if-hash <hash>
+```
+
+If Lexa returns `unchanged:<hash>`, do not reread the file unless new context is needed.
+
+## Editing Files
+
+For line-based edits, prefer Lexa patch operations when they match the task:
+
+```bash
+lexa patch <path> replace -L 12-14 --content '<new content>'
+lexa patch <path> insert --after 20 --content '<new content>'
+lexa patch <path> delete -L 40-45
+```
+
+For safety, pair edits with `--if-hash` when another process or user may have changed the file:
+
+```bash
+lexa patch <path> replace -L 12 --if-hash <hash> --content '<new content>'
+```
+
+Use the native editor or normal patch tools instead of Lexa when edits are structural, span many non-contiguous ranges, or require formatter-aware rewrites.
+
+## MCP Server
+
+Start Lexa over stdio for agent integrations:
+
+```bash
+lexa mcp /path/to/project
+```
+
+Use in-memory mode for disposable sessions:
+
+```bash
+lexa --no-graph mcp /path/to/project
+```
+
+Generic MCP config:
+
+```json
+{
+  "mcpServers": {
+    "lexa": {
+      "command": "lexa",
+      "args": ["mcp", "/path/to/project"]
+    }
+  }
+}
+```
+
+MCP tools exposed by Lexa:
+
+| Tool | Use |
+| --- | --- |
+| `lexa_map` | Whole-repo file map |
+| `lexa_list` | Directory listing |
+| `lexa_glob` | Glob path matching |
+| `lexa_find_path` | Fuzzy file path search |
+| `lexa_outline` | File symbols and imports |
+| `lexa_find_symbol` | Symbol definitions |
+| `lexa_find_word` | Exact word occurrences |
+| `lexa_search` | Text search with regex/scope/compact/path filters |
+| `lexa_find_callers` | Non-definition call sites |
+| `lexa_brief` | Task-focused context |
+| `lexa_trace_deps` | Import dependency tracing |
+| `lexa_read` | Hash-aware file reads |
+| `lexa_patch` | Atomic line edits |
+| `lexa_changes` | Changed files since sequence |
+| `lexa_recent` | Recently modified files |
+| `lexa_status` | Index status |
+| `lexa_pipeline` | Composable query pipeline |
+
+## Verification
+
+After indexing or editing, run the relevant project checks. For Rust projects, default to:
+
+```bash
+cargo fmt -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+For other stacks, inspect the project scripts or package metadata and choose the local lint/test commands already used by the repository.
+
+## Output Discipline
+
+- Cite paths and line ranges from Lexa results when explaining findings.
+- Keep searches scoped with `--path-glob`, `--max`, or focused queries when possible.
+- Re-index after substantial file edits if later Lexa queries must reflect the new state.
+- Mention when a result comes from the graph and may be stale because the project has not been re-indexed.
