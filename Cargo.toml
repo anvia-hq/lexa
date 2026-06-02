@@ -3,6 +3,9 @@ name = "lexa"
 version = "0.1.0"
 edition = "2021"
 description = "Fast code intelligence engine for AI agents"
+license = "MIT"
+repository = "https://github.com/anvia-hq/lexa"
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

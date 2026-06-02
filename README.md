@@ -1,8 +1,27 @@
 # Lexa
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](Cargo.toml)
+[![MCP](https://img.shields.io/badge/MCP-ready-4b5563.svg)](#mcp)
+[![Status](https://img.shields.io/badge/status-early--stage-yellow.svg)](#development)
+
 Fast local code intelligence for humans and AI agents.
 
-Lexa indexes a project into a portable graph and answers codebase questions through a CLI or MCP server. It supports symbol lookup, text search, outlines, dependency tracing, line-range reads, and atomic line-based patches without running an HTTP daemon.
+Lexa indexes a project into a portable graph, then answers codebase questions through a CLI or MCP server. Use it for symbol lookup, text search, file outlines, dependency tracing, hash-aware reads, and atomic line-based patches without running an HTTP daemon.
+
+```bash
+lexa index .
+lexa search "handle_request" --scope
+lexa outline src/main.rs
+lexa mcp .
+```
+
+| Project | Info |
+| --- | --- |
+| Type | Local code intelligence CLI and MCP server |
+| Graph | `.lexa/graph.lexa` by default |
+| Runtime | Native Rust binary, no HTTP daemon |
+| License | MIT |
 
 ## Install
 
