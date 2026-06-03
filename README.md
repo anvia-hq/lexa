@@ -60,7 +60,7 @@ irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex
 Install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- v0.1.0
+curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- v0.2.0
 ```
 
 From source:
@@ -68,6 +68,18 @@ From source:
 ```bash
 cargo install --path .
 ```
+
+Upgrade an installed release:
+
+```bash
+lexa upgrade
+lexa upgrade v0.2.0
+lexa upgrade --install-dir "$HOME/.local/bin"
+```
+
+`upgrade` updates the Lexa binary in the directory containing the currently
+running `lexa`, unless `--install-dir` or `LEXA_INSTALL_DIR` is set. To refresh a
+project's graph, run `lexa index .`.
 
 Or build without installing:
 
@@ -127,6 +139,7 @@ lexa --graph /tmp/project.graph.lexa text-search "Parser"
 | `changes [since]` | Show session-local changes |
 | `recent` | Show recently modified files |
 | `status` | Show index status |
+| `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Refresh graph on file changes |
 | `pipeline <pipeline>` | Chain query operations |
 | `mcp [path]` | Start MCP over stdio |
@@ -201,8 +214,8 @@ Linux x86_64, and Windows x86_64.
 To publish a GitHub Release with all binaries:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 Run the benchmark suite:

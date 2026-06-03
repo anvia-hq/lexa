@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use lexa::engine::{self, SearchOptions};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
@@ -191,6 +191,18 @@ enum Commands {
 
     Status,
 
+    #[command(
+        alias = "update",
+        about = "Upgrade the Lexa binary, not the project index"
+    )]
+    Upgrade {
+        #[arg(default_value = "latest")]
+        version: String,
+
+        #[arg(long, help = "Directory to install the upgraded Lexa binary into")]
+        install_dir: Option<PathBuf>,
+    },
+
     Watch {
         #[arg(default_value = ".")]
         path: String,
@@ -311,6 +323,10 @@ fn main() -> Result<()> {
         ),
         Commands::Glob { ref pattern } => cmd_glob(pattern, &cli),
         Commands::Status => cmd_status(&cli),
+        Commands::Upgrade {
+            ref version,
+            ref install_dir,
+        } => cmd_upgrade(version, install_dir.as_ref(), &cli),
         Commands::Watch { ref path, debounce } => cmd_watch(path, debounce, &cli),
         Commands::Pipeline { ref pipeline } => cmd_query(pipeline, &cli),
         Commands::Mcp { ref path } => cmd_mcp(path, &cli),
@@ -1188,6 +1204,122 @@ fn cmd_status(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn cmd_upgrade(version: &str, install_dir: Option<&PathBuf>, cli: &Cli) -> Result<()> {
+    validate_upgrade_version(version)?;
+    let install_dir = upgrade_install_dir(install_dir)?;
+
+    if cfg!(windows) {
+        return cmd_upgrade_windows(version, &install_dir, cli);
+    }
+
+    cmd_upgrade_unix(version, &install_dir, cli)
+}
+
+#[cfg(not(windows))]
+fn cmd_upgrade_unix(version: &str, install_dir: &std::path::Path, cli: &Cli) -> Result<()> {
+    let script = r#"curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- "$1""#;
+    let mut command = std::process::Command::new("sh");
+    command
+        .arg("-c")
+        .arg(script)
+        .arg("lexa-upgrade")
+        .arg(version)
+        .env("LEXA_INSTALL_DIR", install_dir);
+
+    if cli.json {
+        let output = command.output().context("failed to run Lexa upgrade")?;
+        if !output.status.success() {
+            bail!(
+                "Lexa upgrade failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        return print_json(json!({
+            "operation": "upgrade",
+            "version": version,
+            "install_dir": install_dir.display().to_string(),
+            "status": "ok",
+            "stdout": String::from_utf8_lossy(&output.stdout),
+        }));
+    }
+
+    println!("Upgrading Lexa binary to {version}...");
+    println!("Install directory: {}", install_dir.display());
+    println!("Note: project indexes are updated with 'lexa index', not 'lexa upgrade'.");
+    let status = command.status().context("failed to run Lexa upgrade")?;
+    if !status.success() {
+        bail!("Lexa upgrade failed with status {status}");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn cmd_upgrade_unix(_version: &str, _install_dir: &std::path::Path, _cli: &Cli) -> Result<()> {
+    unreachable!("cmd_upgrade_unix is only called on non-Windows platforms")
+}
+
+#[cfg(windows)]
+fn cmd_upgrade_windows(version: &str, install_dir: &std::path::Path, cli: &Cli) -> Result<()> {
+    if cli.json {
+        bail!("JSON output is not supported for Windows deferred upgrades");
+    }
+
+    let pid = std::process::id();
+    let escaped_version = version.replace('\'', "''");
+    let escaped_install_dir = install_dir.display().to_string().replace('\'', "''");
+    let command = format!(
+        "Wait-Process -Id {pid}; $env:LEXA_VERSION = '{escaped_version}'; $env:LEXA_INSTALL_DIR = '{escaped_install_dir}'; irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex"
+    );
+
+    std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(command)
+        .spawn()
+        .context("failed to start Lexa upgrade")?;
+
+    println!("Started Lexa binary upgrade to {version}.");
+    println!("Install directory: {}", install_dir.display());
+    println!("The updater will run after this lexa.exe process exits.");
+    println!("Note: project indexes are updated with 'lexa index', not 'lexa upgrade'.");
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn cmd_upgrade_windows(_version: &str, _install_dir: &std::path::Path, _cli: &Cli) -> Result<()> {
+    unreachable!("cmd_upgrade_windows is only called on Windows platforms")
+}
+
+fn upgrade_install_dir(install_dir: Option<&PathBuf>) -> Result<PathBuf> {
+    if let Some(dir) = install_dir {
+        return Ok(dir.clone());
+    }
+    if let Some(dir) = std::env::var_os("LEXA_INSTALL_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+
+    let current_exe = std::env::current_exe().context("failed to locate current lexa binary")?;
+    current_exe
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .context("failed to locate current lexa binary directory")
+}
+
+fn validate_upgrade_version(version: &str) -> Result<()> {
+    if version.is_empty() {
+        bail!("upgrade version must not be empty");
+    }
+    if version
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Ok(());
+    }
+    bail!("upgrade version must contain only letters, numbers, '.', '_', or '-'")
+}
+
 fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
     use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
     use std::sync::mpsc::channel;
@@ -1363,4 +1495,30 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
         year += 1;
     }
     (year, month as u32, day as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_version_validation_allows_release_tags() {
+        assert!(validate_upgrade_version("latest").is_ok());
+        assert!(validate_upgrade_version("v0.1.0").is_ok());
+        assert!(validate_upgrade_version("0.1.0").is_ok());
+    }
+
+    #[test]
+    fn upgrade_version_validation_rejects_shell_metacharacters() {
+        assert!(validate_upgrade_version("").is_err());
+        assert!(validate_upgrade_version("v0.1.0;rm").is_err());
+        assert!(validate_upgrade_version("$(echo bad)").is_err());
+    }
+
+    #[test]
+    fn upgrade_install_dir_prefers_explicit_value() {
+        let explicit = PathBuf::from("/tmp/lexa-explicit");
+
+        assert_eq!(upgrade_install_dir(Some(&explicit)).unwrap(), explicit);
+    }
 }

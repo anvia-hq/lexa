@@ -1042,31 +1042,116 @@ impl Engine {
             .or_else(|| self.contents.get(path).map(String::as_str))
     }
 
-    fn resolve_imports(&self, path: &str, imports: &[String], _language: Language) -> Vec<String> {
+    fn resolve_imports(&self, path: &str, imports: &[String], language: Language) -> Vec<String> {
         let mut deps = Vec::new();
         for import in imports {
-            let terms = import_terms(import);
-            if terms.is_empty() {
-                continue;
-            }
-
-            for candidate in self.file_meta.keys() {
-                if candidate == path {
-                    continue;
-                }
-
-                if terms
-                    .iter()
-                    .any(|term| import_matches_path(term, candidate))
-                {
-                    deps.push(candidate.clone());
-                    break;
-                }
+            if language == Language::Rust {
+                deps.extend(self.resolve_rust_import(path, import));
+            } else if let Some(candidate) = self.resolve_generic_import(path, import) {
+                deps.push(candidate);
             }
         }
         deps.sort();
         deps.dedup();
         deps
+    }
+
+    fn resolve_generic_import(&self, importer_path: &str, import: &str) -> Option<String> {
+        let terms = import_terms(import);
+        if terms.is_empty() {
+            return None;
+        }
+
+        if let Some(candidate) = self.exact_import_match(importer_path, &terms) {
+            return Some(candidate);
+        }
+
+        let mut best_match: Option<(i32, &str)> = None;
+        for candidate in self.file_meta.keys() {
+            if candidate == importer_path {
+                continue;
+            }
+
+            for term in &terms {
+                let Some(score) = import_match_score(term, candidate) else {
+                    continue;
+                };
+                let should_replace = best_match.is_none_or(|(best_score, best_path)| {
+                    score > best_score || (score == best_score && candidate.as_str() < best_path)
+                });
+                if should_replace {
+                    best_match = Some((score, candidate));
+                }
+            }
+        }
+
+        best_match.map(|(_, candidate)| candidate.to_string())
+    }
+
+    fn resolve_rust_import(&self, importer_path: &str, import: &str) -> Vec<String> {
+        let mut deps = Vec::new();
+        let mut seen = HashSet::new();
+
+        let module_groups = rust_import_module_path_groups(importer_path, import);
+        for (use_path, module_paths) in &module_groups {
+            let mut group_resolved = false;
+            for module_path in module_paths {
+                let mut found = false;
+                for candidate in rust_module_file_candidates(module_path) {
+                    if candidate == importer_path || !self.file_meta.contains_key(&candidate) {
+                        continue;
+                    }
+                    if seen.insert(candidate.clone()) {
+                        deps.push(candidate);
+                    }
+                    found = true;
+                    group_resolved = true;
+                    break;
+                }
+                if found {
+                    break;
+                }
+            }
+
+            if !group_resolved {
+                let fallback_import = format!("use {use_path};");
+                if let Some(candidate) =
+                    self.resolve_generic_import(importer_path, &fallback_import)
+                {
+                    if seen.insert(candidate.clone()) {
+                        deps.push(candidate);
+                    }
+                }
+            }
+        }
+
+        if deps.is_empty() && module_groups.is_empty() {
+            if let Some(candidate) = self.resolve_generic_import(importer_path, import) {
+                deps.push(candidate);
+            }
+        }
+
+        deps
+    }
+
+    fn exact_import_match(&self, importer_path: &str, terms: &[String]) -> Option<String> {
+        let mut best_match: Option<(i32, String)> = None;
+
+        for term in terms {
+            for (score, candidate) in exact_import_candidates(importer_path, term) {
+                if candidate == importer_path || !self.file_meta.contains_key(&candidate) {
+                    continue;
+                }
+                let should_replace = best_match.as_ref().is_none_or(|(best_score, best_path)| {
+                    score > *best_score || (score == *best_score && candidate < *best_path)
+                });
+                if should_replace {
+                    best_match = Some((score, candidate));
+                }
+            }
+        }
+
+        best_match.map(|(_, path)| path)
     }
 
     fn rebuild_dep_graph(&mut self) {
@@ -1246,6 +1331,236 @@ fn import_terms(import: &str) -> Vec<String> {
     expanded
 }
 
+fn rust_import_module_path_groups(importer_path: &str, import: &str) -> Vec<(String, Vec<String>)> {
+    let Some(use_tree) = rust_use_tree(import) else {
+        return Vec::new();
+    };
+    let (source_root, importer_module) = rust_source_root_and_module_path(importer_path);
+    let expanded_paths = expand_rust_use_tree(use_tree);
+    let mut groups = Vec::new();
+
+    for use_path in expanded_paths {
+        let module_paths =
+            rust_module_paths_from_use_path(&source_root, &importer_module, &use_path);
+        if !module_paths.is_empty() {
+            groups.push((use_path, module_paths));
+        }
+    }
+
+    groups
+}
+
+fn rust_use_tree(import: &str) -> Option<&str> {
+    let raw = import.trim().trim_end_matches(';').trim();
+
+    for (idx, _) in raw.match_indices("use") {
+        let before = raw[..idx].chars().next_back();
+        let after = raw[idx + "use".len()..].chars().next();
+        let before_is_boundary = before.is_none_or(|ch| !is_rust_ident_char(ch));
+        let after_is_boundary = after.is_some_and(char::is_whitespace);
+        if before_is_boundary && after_is_boundary {
+            return Some(raw[idx + "use".len()..].trim());
+        }
+    }
+
+    None
+}
+
+fn is_rust_ident_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
+fn expand_rust_use_tree(use_tree: &str) -> Vec<String> {
+    let use_tree = use_tree.trim();
+    let Some((start, end)) = top_level_brace_pair(use_tree) else {
+        return vec![use_tree.to_string()];
+    };
+
+    let prefix = use_tree[..start].trim();
+    let suffix = use_tree[end + 1..].trim();
+    let inner = &use_tree[start + 1..end];
+    let mut paths = Vec::new();
+
+    for item in split_top_level_commas(inner) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let combined = format!("{prefix}{item}{suffix}");
+        paths.extend(expand_rust_use_tree(&combined));
+    }
+
+    paths
+}
+
+fn top_level_brace_pair(value: &str) -> Option<(usize, usize)> {
+    let mut start = None;
+    let mut depth = 0usize;
+
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '{' => {
+                if depth == 0 && start.is_none() {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return start.map(|start| (start, idx));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn split_top_level_commas(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&value[start..idx]);
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    parts.push(&value[start..]);
+    parts
+}
+
+fn rust_source_root_and_module_path(path: &str) -> (String, Vec<String>) {
+    let (source_root, relative) =
+        if let Some((source_root, relative)) = rust_bin_source_root_and_relative(path) {
+            (source_root, relative)
+        } else if let Some(relative) = path.strip_prefix("src/") {
+            ("src".to_string(), relative)
+        } else if let Some((prefix, relative)) = path.rsplit_once("/src/") {
+            (format!("{prefix}/src"), relative)
+        } else if let Some((dir, filename)) = path.rsplit_once('/') {
+            (dir.to_string(), filename)
+        } else {
+            (String::new(), path)
+        };
+
+    let module = if relative == "lib.rs" || relative == "main.rs" {
+        ""
+    } else if let Some(module) = relative.strip_suffix("/mod.rs") {
+        module
+    } else {
+        strip_known_extension(relative)
+    };
+
+    let segments = module
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(ToString::to_string)
+        .collect();
+
+    (source_root, segments)
+}
+
+fn rust_bin_source_root_and_relative(path: &str) -> Option<(String, &str)> {
+    let (src_prefix, bin_relative) = if let Some(relative) = path.strip_prefix("src/bin/") {
+        ("src", relative)
+    } else if let Some((prefix, relative)) = path.rsplit_once("/src/bin/") {
+        (&path[..prefix.len() + "/src".len()], relative)
+    } else {
+        return None;
+    };
+
+    if let Some((target_name, target_relative)) = bin_relative.split_once('/') {
+        return Some((format!("{src_prefix}/bin/{target_name}"), target_relative));
+    }
+
+    let target_name = strip_known_extension(bin_relative);
+    if target_name == bin_relative {
+        None
+    } else {
+        Some((format!("{src_prefix}/bin/{target_name}"), "main.rs"))
+    }
+}
+
+fn rust_module_paths_from_use_path(
+    source_root: &str,
+    importer_module: &[String],
+    use_path: &str,
+) -> Vec<String> {
+    let path = use_path
+        .split(" as ")
+        .next()
+        .unwrap_or(use_path)
+        .trim()
+        .trim_end_matches("::*")
+        .trim_end_matches("::self");
+    let segments: Vec<&str> = path
+        .split("::")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    let mut base: Vec<String> = Vec::new();
+    let mut index = 0usize;
+    match segments[0] {
+        "crate" => index = 1,
+        "self" => {
+            base.extend(importer_module.iter().cloned());
+            index = 1;
+        }
+        "super" => {
+            base.extend(importer_module.iter().cloned());
+            while segments
+                .get(index)
+                .is_some_and(|segment| *segment == "super")
+            {
+                base.pop();
+                index += 1;
+            }
+        }
+        _ => {}
+    }
+
+    for segment in &segments[index..] {
+        if *segment == "self" || *segment == "*" {
+            continue;
+        }
+        base.push((*segment).to_string());
+    }
+
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for len in (1..=base.len()).rev() {
+        let module_path = base[..len].join("/");
+        let full_path = if source_root.is_empty() {
+            module_path
+        } else {
+            format!("{source_root}/{module_path}")
+        };
+        if seen.insert(full_path.clone()) {
+            paths.push(full_path);
+        }
+    }
+
+    paths
+}
+
+fn rust_module_file_candidates(module_path: &str) -> Vec<String> {
+    vec![format!("{module_path}.rs"), format!("{module_path}/mod.rs")]
+}
+
 fn expand_rust_use_terms(rest: &str) -> Vec<String> {
     let rest = rest.trim().trim_end_matches(';').trim();
     let rest = rest
@@ -1268,6 +1583,10 @@ fn expand_rust_use_terms(rest: &str) -> Vec<String> {
                 continue;
             }
             terms.push(format!("{prefix}::{item}"));
+            if let Some((module_path, _name)) = item.rsplit_once("::") {
+                terms.push(format!("{prefix}::{module_path}"));
+                terms.push(module_path.to_string());
+            }
             terms.push(item.to_string());
         }
         return terms;
@@ -1284,7 +1603,11 @@ fn expand_rust_use_terms(rest: &str) -> Vec<String> {
             .collect();
     }
 
-    vec![rest.to_string()]
+    let mut terms = vec![rest.to_string()];
+    if let Some((module_path, _name)) = rest.rsplit_once("::") {
+        terms.push(module_path.to_string());
+    }
+    terms
 }
 
 fn extract_quoted(raw: &str) -> Option<String> {
@@ -1303,47 +1626,183 @@ fn extract_include(raw: &str) -> Option<String> {
 }
 
 fn normalize_import_term(term: &str) -> String {
-    term.trim()
+    let normalized = term
+        .trim()
         .trim_start_matches('#')
         .trim_start_matches("include ")
         .trim_start_matches("crate::")
         .trim_start_matches("self::")
         .trim_start_matches("super::")
-        .trim_start_matches("./")
-        .trim_start_matches("../")
         .trim_matches('{')
         .trim_matches('}')
-        .replace("::", "/")
-        .replace('.', "/")
+        .replace("::", "/");
+
+    if normalized.starts_with("./") || normalized.starts_with("../") {
+        normalized
+    } else {
+        normalized.replace('.', "/")
+    }
 }
 
-fn import_matches_path(term: &str, path: &str) -> bool {
-    let path_stem = path
-        .trim_end_matches(".rs")
-        .trim_end_matches(".py")
-        .trim_end_matches(".ts")
-        .trim_end_matches(".tsx")
-        .trim_end_matches(".js")
-        .trim_end_matches(".jsx")
-        .trim_end_matches(".go")
-        .trim_end_matches(".java")
-        .trim_end_matches(".rb")
-        .trim_end_matches(".php")
-        .trim_end_matches(".zig");
+fn exact_import_candidates(importer_path: &str, term: &str) -> Vec<(i32, String)> {
+    let mut bases = Vec::new();
+    let mut seen_bases = HashSet::new();
 
-    path == term
-        || path_stem == term
-        || path.ends_with(&format!("/{term}"))
-        || path_stem.ends_with(&format!("/{term}"))
-        || path.ends_with(&format!("/{term}.rs"))
-        || path.ends_with(&format!("/{term}.py"))
-        || path.ends_with(&format!("/{term}.ts"))
-        || path.ends_with(&format!("/{term}.tsx"))
-        || path.ends_with(&format!("/{term}.js"))
-        || path.ends_with(&format!("/{term}.jsx"))
-        || path.ends_with(&format!("/{term}/mod.rs"))
-        || path.ends_with(&format!("/{term}/index.ts"))
-        || path.ends_with(&format!("/{term}/index.js"))
+    if let Some(relative) = resolve_relative_import_base(importer_path, term) {
+        push_unique(&mut bases, &mut seen_bases, relative);
+    } else {
+        let normalized = term.trim_matches('/').to_string();
+        if !normalized.is_empty() {
+            push_unique(&mut bases, &mut seen_bases, normalized.clone());
+
+            if let Some(dir) = importer_path.rsplit_once('/').map(|(dir, _)| dir) {
+                push_unique(&mut bases, &mut seen_bases, format!("{dir}/{normalized}"));
+            }
+
+            if !normalized.starts_with("src/") {
+                push_unique(&mut bases, &mut seen_bases, format!("src/{normalized}"));
+            }
+        }
+    }
+
+    let specificity = import_term_specificity(term);
+    let mut candidates = Vec::new();
+    let mut seen_candidates = HashSet::new();
+
+    for base in bases {
+        push_scored_candidate(
+            &mut candidates,
+            &mut seen_candidates,
+            1200 + specificity,
+            base.clone(),
+        );
+        for ext in IMPORT_FILE_EXTENSIONS {
+            push_scored_candidate(
+                &mut candidates,
+                &mut seen_candidates,
+                1100 + specificity,
+                format!("{base}.{ext}"),
+            );
+        }
+        for index_file in IMPORT_INDEX_FILES {
+            push_scored_candidate(
+                &mut candidates,
+                &mut seen_candidates,
+                1000 + specificity,
+                format!("{base}/{index_file}"),
+            );
+        }
+    }
+
+    candidates
+}
+
+fn resolve_relative_import_base(importer_path: &str, term: &str) -> Option<String> {
+    if !term.starts_with("./") && !term.starts_with("../") {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = importer_path
+        .rsplit_once('/')
+        .map(|(dir, _)| dir.split('/').filter(|part| !part.is_empty()).collect())
+        .unwrap_or_default();
+
+    for part in term.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, seen: &mut HashSet<String>, value: String) {
+    if seen.insert(value.clone()) {
+        values.push(value);
+    }
+}
+
+fn push_scored_candidate(
+    values: &mut Vec<(i32, String)>,
+    seen: &mut HashSet<String>,
+    score: i32,
+    value: String,
+) {
+    if seen.insert(value.clone()) {
+        values.push((score, value));
+    }
+}
+
+fn import_term_specificity(term: &str) -> i32 {
+    (term.matches('/').count() as i32 * 50) + term.len().min(80) as i32
+}
+
+fn import_match_score(term: &str, path: &str) -> Option<i32> {
+    let term = term.trim_matches('/');
+    if term.is_empty() {
+        return None;
+    }
+
+    let path_stem = strip_known_extension(path);
+    let specificity = import_term_specificity(term);
+
+    if path == term {
+        return Some(1000 + specificity);
+    }
+    if path_stem == term {
+        return Some(950 + specificity);
+    }
+    if path.ends_with(&format!("/{term}")) {
+        return Some(800 + specificity);
+    }
+    if path_stem.ends_with(&format!("/{term}")) {
+        return Some(750 + specificity);
+    }
+    for ext in IMPORT_FILE_EXTENSIONS {
+        if path.ends_with(&format!("/{term}.{ext}")) || path == format!("{term}.{ext}") {
+            return Some(700 + specificity);
+        }
+    }
+    for index_file in IMPORT_INDEX_FILES {
+        if path.ends_with(&format!("/{term}/{index_file}"))
+            || path == format!("{term}/{index_file}")
+        {
+            return Some(650 + specificity);
+        }
+    }
+
+    None
+}
+
+const IMPORT_FILE_EXTENSIONS: &[&str] = &[
+    "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "rb", "php", "zig", "c", "h", "cpp", "hpp",
+    "cc", "hh", "cxx", "hxx",
+];
+
+const IMPORT_INDEX_FILES: &[&str] = &[
+    "mod.rs",
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    "__init__.py",
+];
+
+fn strip_known_extension(path: &str) -> &str {
+    for ext in IMPORT_FILE_EXTENSIONS {
+        if let Some(stem) = path.strip_suffix(&format!(".{ext}")) {
+            return stem;
+        }
+    }
+    path
 }
 
 fn fuzzy_match(pattern: &[char], text: &str) -> Option<f32> {
@@ -1437,6 +1896,177 @@ mod tests {
         engine.index_file("src/b.rs", "pub fn b() {}\n");
 
         assert_eq!(engine.get_depends_on("src/a.rs"), vec!["src/b.rs"]);
+    }
+
+    #[test]
+    fn dependency_graph_prefers_specific_nested_rust_module_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/root.rs",
+            "use crate::api::client::Client;\nfn root() {}\n",
+        );
+        engine.index_file("src/client.rs", "pub struct WrongClient;\n");
+        engine.index_file("src/api/client.rs", "pub struct Client;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/root.rs"),
+            vec!["src/api/client.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_grouped_nested_rust_module_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/root.rs",
+            "use crate::api::{client::Client};\nfn root() {}\n",
+        );
+        engine.index_file("src/client.rs", "pub struct WrongClient;\n");
+        engine.index_file("src/api/client.rs", "pub struct Client;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/root.rs"),
+            vec!["src/api/client.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_multiple_grouped_rust_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/root.rs",
+            "use crate::api::{client::Client, server::Server};\nfn root() {}\n",
+        );
+        engine.index_file("src/api/client.rs", "pub struct Client;\n");
+        engine.index_file("src/api/server.rs", "pub struct Server;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/root.rs"),
+            vec!["src/api/client.rs", "src/api/server.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_multiline_grouped_rust_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/root.rs",
+            "use crate::{\n    api::client::Client,\n    api::server::Server,\n};\nfn root() {}\n",
+        );
+        engine.index_file("src/api/client.rs", "pub struct Client;\n");
+        engine.index_file("src/api/server.rs", "pub struct Server;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/root.rs"),
+            vec!["src/api/client.rs", "src/api/server.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_self_and_super_rust_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/api/mod.rs", "use self::client::Client;\nfn api() {}\n");
+        engine.index_file(
+            "src/api/routes.rs",
+            "use super::client::Client;\nfn routes() {}\n",
+        );
+        engine.index_file("src/client.rs", "pub struct WrongClient;\n");
+        engine.index_file("src/api/client.rs", "pub struct Client;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/api/mod.rs"),
+            vec!["src/api/client.rs"]
+        );
+        assert_eq!(
+            engine.get_depends_on("src/api/routes.rs"),
+            vec!["src/api/client.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_rust_imports_inside_nested_crate_roots() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "crates/core/src/root.rs",
+            "use crate::client::Client;\nfn root() {}\n",
+        );
+        engine.index_file("src/client.rs", "pub struct WrongClient;\n");
+        engine.index_file("crates/core/src/client.rs", "pub struct Client;\n");
+
+        assert_eq!(
+            engine.get_depends_on("crates/core/src/root.rs"),
+            vec!["crates/core/src/client.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_rust_bin_target_crate_roots() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/bin/tool.rs",
+            "use crate::client::Client;\nfn main() {}\n",
+        );
+        engine.index_file("src/client.rs", "pub struct WrongClient;\n");
+        engine.index_file("src/bin/tool/client.rs", "pub struct Client;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/bin/tool.rs"),
+            vec!["src/bin/tool/client.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_nested_rust_bin_target_crate_roots() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/bin/tool/main.rs",
+            "use crate::client::Client;\nfn main() {}\n",
+        );
+        engine.index_file("src/client.rs", "pub struct WrongClient;\n");
+        engine.index_file("src/bin/tool/client.rs", "pub struct Client;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/bin/tool/main.rs"),
+            vec!["src/bin/tool/client.rs"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_prefers_specific_relative_js_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/app.ts",
+            "import { client } from './feature/client';\nclient();\n",
+        );
+        engine.index_file("src/client.ts", "export const client = () => 'wrong';\n");
+        engine.index_file(
+            "src/feature/client.ts",
+            "export const client = () => 'right';\n",
+        );
+
+        assert_eq!(
+            engine.get_depends_on("src/app.ts"),
+            vec!["src/feature/client.ts"]
+        );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_parent_relative_js_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/feature/app.ts",
+            "import { client } from '../client';\nclient();\n",
+        );
+        engine.index_file(
+            "src/feature/client.ts",
+            "export const client = () => 'wrong';\n",
+        );
+        engine.index_file("src/client.ts", "export const client = () => 'right';\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/feature/app.ts"),
+            vec!["src/client.ts"]
+        );
     }
 
     #[test]

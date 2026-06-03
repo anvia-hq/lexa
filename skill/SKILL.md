@@ -23,6 +23,17 @@ cargo install --path /path/to/lexa --force
 
 If unavailable and the repository path is unknown, ask the user for the Lexa repository or binary path.
 
+To upgrade the installed Lexa binary, use:
+
+```bash
+lexa upgrade
+```
+
+By default, `upgrade` installs into the directory containing the running `lexa`
+binary. Use `lexa upgrade --install-dir <dir>` or `LEXA_INSTALL_DIR` for an
+explicit target. Use `lexa index .` to refresh a project's graph. Do not describe
+`upgrade` as updating the project index.
+
 ## Index The Project
 
 From the target project root:
@@ -79,6 +90,7 @@ All CLI commands:
 | `create <path>` | Create a file safely |
 | `glob <pattern>` | Match indexed paths with a glob |
 | `status` | Show index status |
+| `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Watch files and refresh the graph |
 | `pipeline <pipeline>` | Run composable query stages |
 | `mcp [path]` | Start the MCP server over stdio |
