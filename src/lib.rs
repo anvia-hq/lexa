@@ -2,6 +2,7 @@ pub mod audit;
 mod cache;
 pub mod edit;
 pub mod engine;
+pub mod freshness;
 pub(crate) mod glob;
 mod index;
 pub mod mcp;

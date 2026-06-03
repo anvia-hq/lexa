@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use lexa::engine::{self, SearchOptions};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
-use lexa::{audit, edit, mcp, pipeline, snapshot, store};
+use lexa::{audit, edit, freshness, mcp, pipeline, snapshot, store};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -239,6 +239,12 @@ enum Commands {
     Mcp {
         #[arg(default_value = ".")]
         path: PathBuf,
+
+        #[arg(long)]
+        no_refresh: bool,
+
+        #[arg(long, default_value = "500")]
+        debounce: u64,
     },
 }
 
@@ -365,7 +371,11 @@ fn main() -> Result<()> {
         } => cmd_upgrade(version, install_dir.as_ref(), &cli),
         Commands::Watch { ref path, debounce } => cmd_watch(path, debounce, &cli),
         Commands::Pipeline { ref pipeline } => cmd_query(pipeline, &cli),
-        Commands::Mcp { ref path } => cmd_mcp(path, &cli),
+        Commands::Mcp {
+            ref path,
+            no_refresh,
+            debounce,
+        } => cmd_mcp(path, no_refresh, debounce, &cli),
     }
 }
 
@@ -444,7 +454,7 @@ fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> 
     Ok(())
 }
 
-fn cmd_mcp(path: &PathBuf, cli: &Cli) -> Result<()> {
+fn cmd_mcp(path: &PathBuf, no_refresh: bool, debounce_ms: u64, cli: &Cli) -> Result<()> {
     let root = std::fs::canonicalize(path)?;
     let snap_path = project_graph_path(&root, cli);
     let mut engine = engine::Engine::new(16384);
@@ -464,9 +474,24 @@ fn cmd_mcp(path: &PathBuf, cli: &Cli) -> Result<()> {
             snapshot::write_snapshot(&engine, &snap_path)?;
             eprintln!("Graph saved to {}", snap_path.display());
         }
+    } else if !no_refresh {
+        let summary = freshness::refresh_project(&mut engine, &root)?;
+        if summary.changed() {
+            eprintln!(
+                "Refreshed MCP graph: {} indexed, {} removed",
+                summary.indexed, summary.removed
+            );
+            if !cli.no_graph {
+                snapshot::write_snapshot(&engine, &snap_path)?;
+                eprintln!("Graph saved to {}", snap_path.display());
+            }
+        }
     }
 
     let mut server = mcp::McpServer::new(engine, root, snap_path, !cli.no_graph);
+    if !no_refresh {
+        server.enable_watcher(debounce_ms)?;
+    }
     server.run()
 }
 
@@ -1611,5 +1636,40 @@ mod tests {
         let explicit = PathBuf::from("/tmp/lexa-explicit");
 
         assert_eq!(upgrade_install_dir(Some(&explicit)).unwrap(), explicit);
+    }
+
+    #[test]
+    fn mcp_defaults_to_refresh_with_standard_debounce() {
+        let cli = Cli::try_parse_from(["lexa", "mcp", "."]).unwrap();
+
+        match cli.command {
+            Commands::Mcp {
+                no_refresh,
+                debounce,
+                ..
+            } => {
+                assert!(!no_refresh);
+                assert_eq!(debounce, 500);
+            }
+            _ => panic!("expected mcp command"),
+        }
+    }
+
+    #[test]
+    fn mcp_accepts_no_refresh_and_custom_debounce() {
+        let cli =
+            Cli::try_parse_from(["lexa", "mcp", ".", "--no-refresh", "--debounce", "250"]).unwrap();
+
+        match cli.command {
+            Commands::Mcp {
+                no_refresh,
+                debounce,
+                ..
+            } => {
+                assert!(no_refresh);
+                assert_eq!(debounce, 250);
+            }
+            _ => panic!("expected mcp command"),
+        }
     }
 }

@@ -245,7 +245,26 @@ entrypoint_globs = ["src/main.*", "src/bin/**", "pages/**", "app/**"]
 Expose the same graph-backed tools to an MCP client:
 
 ```bash
+lexa index /path/to/project
 lexa mcp /path/to/project
+```
+
+MCP refreshes the graph before startup and watches the project while running.
+External edit events are applied to the same in-memory graph before the next MCP
+request is handled, so tools see fresh content without restarting the server.
+Run `lexa index` first when you want MCP to start from a fully rebuilt graph
+instead of relying on the cheaper startup freshness check.
+Disable both the startup refresh and runtime watcher when you want to trust the
+existing graph exactly:
+
+```bash
+lexa mcp /path/to/project --no-refresh
+```
+
+Tune the watcher debounce interval when needed:
+
+```bash
+lexa mcp /path/to/project --debounce 250
 ```
 
 Run MCP without loading or saving a graph:
