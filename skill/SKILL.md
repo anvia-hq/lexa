@@ -95,7 +95,7 @@ All CLI commands:
 | `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Watch files and refresh the graph |
 | `pipeline <pipeline>` | Run composable query stages |
-| `mcp [path]` | Start the MCP server over stdio |
+| `mcp [path]` | Start the MCP server over stdio; returns text-only tool content by default |
 
 Important search flags:
 
@@ -198,6 +198,8 @@ Generic MCP config:
 ```
 
 MCP tools exposed by Lexa:
+
+By default MCP tool calls omit duplicated `structuredContent` to reduce model token use. Use `lexa mcp . --structured-content` or `lexa mcp . --json` only when the MCP client needs JSON structured tool results.
 
 | Tool | Use |
 | --- | --- |
