@@ -77,6 +77,7 @@ pub struct AuditFinding {
 pub struct AuditReport {
     pub scope: AuditScopeReport,
     pub verdict: AuditVerdict,
+    pub verification_note: String,
     pub summary: AuditSummary,
     pub groups: AuditGroups,
     pub findings: Vec<AuditFinding>,
@@ -147,6 +148,7 @@ pub fn render_audit_report(report: &AuditReport) -> String {
         out.push_str(&format!(" (showing {})", report.summary.returned_findings));
     }
     out.push('\n');
+    out.push_str(&format!("verification: {}\n", report.verification_note));
 
     if let AuditScopeReport::GitSince {
         base,
