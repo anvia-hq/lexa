@@ -173,6 +173,7 @@ lexa audit --since main
 lexa audit --since main --strict
 lexa audit --config lexa.toml
 lexa audit --no-config
+lexa audit --include dead-code
 ```
 
 `audit` is read-only. It flags import cycles, large files, large symbols, and
@@ -180,7 +181,8 @@ dependency hotspots from the indexed graph. Use `--since` to scope findings to
 changed files and their direct dependency context. Use `--strict` to return a
 non-zero exit code when high-severity findings are present. Config is optional;
 Lexa discovers `lexa.toml` or `.lexa/audit.toml` unless `--config` or
-`--no-config` is used.
+`--no-config` is used. Dead-code candidates are read-only and off by default;
+enable them with `--include dead-code` or config.
 
 Minimal audit config:
 
@@ -203,10 +205,15 @@ fan_out_high = 50
 "file.large" = "warning"
 "symbol.large" = "warning"
 "dependency.hotspot" = "warning"
+"dead_code.candidate" = "off"
 
 [audit.ignore]
 paths = ["target/**", "vendor/**"]
 findings = ["dependency.hotspot:src/main.rs"]
+
+[audit.dead_code]
+ignore_symbols = ["main", "handler", "setup"]
+entrypoint_globs = ["src/main.*", "src/bin/**", "pages/**", "app/**"]
 ```
 
 ## MCP

@@ -235,10 +235,13 @@ lexa audit --since main
 lexa audit --since main --strict
 lexa audit --config lexa.toml
 lexa audit --no-config
+lexa audit --include dead-code
 ```
 
 Use `--since <git-ref>` for review scope and `--strict` when the user wants a
 CI-style non-zero exit on high-severity findings.
+Use `--include dead-code` only when the user explicitly wants unused-code
+candidates; treat those findings as candidates, not removal instructions.
 
 Audit config is optional. Lexa discovers `lexa.toml` or `.lexa/audit.toml`
 unless `--config` or `--no-config` is used. Dotted rule IDs must be quoted in
@@ -247,6 +250,11 @@ TOML, for example:
 ```toml
 [audit.rules]
 "file.large" = "off"
+"dead_code.candidate" = "warning"
+
+[audit.dead_code]
+ignore_symbols = ["main", "handler", "setup"]
+entrypoint_globs = ["src/main.*", "src/bin/**"]
 ```
 
 ## Verification

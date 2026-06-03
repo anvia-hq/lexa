@@ -18,12 +18,26 @@ const HOTSPOT_FAN_OUT_WARNING: usize = 20;
 const HOTSPOT_FAN_OUT_HIGH: usize = 50;
 const MAX_CYCLE_DEPTH: usize = 32;
 const MAX_INTERNAL_CYCLES: usize = 1000;
+const DEFAULT_DEAD_CODE_IGNORE_SYMBOLS: &[&str] = &[
+    "main", "new", "default", "test", "setup", "handler", "render", "init",
+];
+const DEFAULT_DEAD_CODE_ENTRYPOINT_GLOBS: &[&str] = &[
+    "src/main.*",
+    "src/bin/**",
+    "src/lib.*",
+    "pages/**",
+    "app/**",
+    "tests/**",
+    "benches/**",
+    "examples/**",
+];
 
 #[derive(Debug, Clone)]
 pub struct AuditOptions {
     pub max_results: usize,
     pub scope: AuditScope,
     pub config: AuditConfig,
+    pub includes: AuditIncludes,
 }
 
 impl Default for AuditOptions {
@@ -32,8 +46,14 @@ impl Default for AuditOptions {
             max_results: DEFAULT_MAX_FINDINGS,
             scope: AuditScope::Project,
             config: AuditConfig::default(),
+            includes: AuditIncludes::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AuditIncludes {
+    pub dead_code: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +62,7 @@ pub struct AuditConfig {
     pub thresholds: AuditThresholds,
     pub rules: AuditRules,
     pub ignore: AuditIgnore,
+    pub dead_code: DeadCodeConfig,
 }
 
 impl Default for AuditConfig {
@@ -51,6 +72,7 @@ impl Default for AuditConfig {
             thresholds: AuditThresholds::default(),
             rules: AuditRules::default(),
             ignore: AuditIgnore::default(),
+            dead_code: DeadCodeConfig::default(),
         }
     }
 }
@@ -88,6 +110,7 @@ pub struct AuditRules {
     pub file_large: RuleSetting,
     pub symbol_large: RuleSetting,
     pub dependency_hotspot: RuleSetting,
+    pub dead_code_candidate: RuleSetting,
 }
 
 impl Default for AuditRules {
@@ -97,6 +120,7 @@ impl Default for AuditRules {
             file_large: RuleSetting::Warning,
             symbol_large: RuleSetting::Warning,
             dependency_hotspot: RuleSetting::Warning,
+            dead_code_candidate: RuleSetting::Off,
         }
     }
 }
@@ -105,6 +129,27 @@ impl Default for AuditRules {
 pub struct AuditIgnore {
     pub paths: Vec<String>,
     pub findings: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeadCodeConfig {
+    pub ignore_symbols: HashSet<String>,
+    pub entrypoint_globs: Vec<String>,
+}
+
+impl Default for DeadCodeConfig {
+    fn default() -> Self {
+        Self {
+            ignore_symbols: DEFAULT_DEAD_CODE_IGNORE_SYMBOLS
+                .iter()
+                .map(|symbol| (*symbol).to_string())
+                .collect(),
+            entrypoint_globs: DEFAULT_DEAD_CODE_ENTRYPOINT_GLOBS
+                .iter()
+                .map(|glob| (*glob).to_string())
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -212,6 +257,8 @@ struct AuditConfigSection {
     rules: HashMap<String, RuleSetting>,
     #[serde(default)]
     ignore: AuditIgnoreSection,
+    #[serde(default)]
+    dead_code: DeadCodeSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -234,6 +281,15 @@ struct AuditIgnoreSection {
     paths: Vec<String>,
     #[serde(default)]
     findings: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeadCodeSection {
+    #[serde(default)]
+    ignore_symbols: Vec<String>,
+    #[serde(default)]
+    entrypoint_globs: Vec<String>,
 }
 
 pub fn load_audit_config(
@@ -282,8 +338,16 @@ impl AuditConfig {
         config.rules.apply(audit.rules)?;
         config.ignore.paths = audit.ignore.paths;
         config.ignore.findings = audit.ignore.findings.into_iter().collect();
+        config.dead_code.apply(audit.dead_code);
 
         Ok(config)
+    }
+}
+
+impl DeadCodeConfig {
+    fn apply(&mut self, section: DeadCodeSection) {
+        self.ignore_symbols.extend(section.ignore_symbols);
+        self.entrypoint_globs.extend(section.entrypoint_globs);
     }
 }
 
@@ -341,6 +405,7 @@ impl AuditRules {
                 "file.large" => self.file_large = setting,
                 "symbol.large" => self.symbol_large = setting,
                 "dependency.hotspot" => self.dependency_hotspot = setting,
+                "dead_code.candidate" => self.dead_code_candidate = setting,
                 _ => bail!("unknown audit rule '{rule}'"),
             }
         }
@@ -360,6 +425,7 @@ pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {
     audit_large_files(engine, &options.config, &mut findings);
     audit_large_symbols(engine, &options.config, &mut findings);
     audit_dependency_hotspots(engine, &options.config, &mut findings);
+    audit_dead_code_candidates(engine, &options.config, options.includes, &mut findings);
 
     findings = filter_findings_by_scope(engine, findings, &options.scope);
     findings = filter_ignored_findings(findings, &options.config.ignore);
@@ -642,6 +708,67 @@ fn audit_dependency_hotspots(
     }
 }
 
+fn audit_dead_code_candidates(
+    engine: &Engine,
+    config: &AuditConfig,
+    includes: AuditIncludes,
+    findings: &mut Vec<AuditFinding>,
+) {
+    let rule_setting = if includes.dead_code {
+        RuleSetting::Warning
+    } else {
+        config.rules.dead_code_candidate
+    };
+    let Some(severity) = rule_setting.finding_severity(AuditSeverity::Warning) else {
+        return;
+    };
+
+    for (path, _) in engine.file_map() {
+        if is_dead_code_entrypoint_path(&path, &config.dead_code.entrypoint_globs) {
+            continue;
+        }
+        let Some(outline) = engine.get_outline(&path) else {
+            continue;
+        };
+
+        for symbol in &outline.symbols {
+            if !is_dead_code_symbol_candidate(symbol, &config.dead_code) {
+                continue;
+            }
+
+            let refs = engine.search_word(&symbol.name);
+            let external_refs = refs
+                .iter()
+                .filter(|result| result.path != path || result.line_num != symbol.line_start)
+                .count();
+            if external_refs > 0 {
+                continue;
+            }
+
+            let reference_count = refs.len();
+            findings.push(AuditFinding {
+                id: format!("dead_code.candidate:{path}:{}:{}", symbol.line_start, symbol.name),
+                rule: "dead_code.candidate".to_string(),
+                severity,
+                title: format!("Possible unused {} `{}`", symbol.kind, symbol.name),
+                path: path.clone(),
+                line_start: Some(symbol.line_start),
+                line_end: Some(symbol.line_end),
+                message: "This internal-looking symbol has no indexed references outside its definition line.".to_string(),
+                evidence: vec![
+                    format!("symbol: {}", symbol.name),
+                    format!("reference_count: {reference_count}"),
+                    "classification: internal candidate".to_string(),
+                ],
+                related_paths: Vec::new(),
+                suggestion:
+                    "Verify external, framework, generated, or reflective usage before removing."
+                        .to_string(),
+            });
+        }
+    }
+}
+
 fn hotspot_severity(
     fan_in: usize,
     fan_out: usize,
@@ -733,6 +860,46 @@ fn is_large_symbol_candidate(symbol: &Symbol) -> bool {
             | SymbolKind::StructDef
             | SymbolKind::TraitDef
     )
+}
+
+fn is_dead_code_entrypoint_path(path: &str, globs: &[String]) -> bool {
+    globs.iter().any(|glob| match_glob(glob, path))
+}
+
+fn is_dead_code_symbol_candidate(symbol: &Symbol, config: &DeadCodeConfig) -> bool {
+    if config.ignore_symbols.contains(&symbol.name) {
+        return false;
+    }
+    if is_public_or_exported_symbol(symbol) {
+        return false;
+    }
+    matches!(
+        symbol.kind,
+        SymbolKind::Function
+            | SymbolKind::Method
+            | SymbolKind::Constant
+            | SymbolKind::Variable
+            | SymbolKind::ClassDef
+            | SymbolKind::StructDef
+            | SymbolKind::EnumDef
+            | SymbolKind::InterfaceDef
+            | SymbolKind::TypeAlias
+            | SymbolKind::TraitDef
+    )
+}
+
+fn is_public_or_exported_symbol(symbol: &Symbol) -> bool {
+    if symbol.name.starts_with('_') {
+        return false;
+    }
+    if symbol
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("pub ") || detail.contains("export "))
+    {
+        return true;
+    }
+    symbol.name.chars().next().is_some_and(char::is_uppercase)
 }
 
 fn find_cycles(engine: &Engine) -> Vec<Vec<String>> {
@@ -865,6 +1032,7 @@ mod tests {
                     changed_files: vec!["src/large.rs".to_string()],
                 },
                 config: AuditConfig::default(),
+                includes: AuditIncludes::default(),
             },
         );
 
@@ -892,6 +1060,7 @@ mod tests {
                     changed_files: vec!["src/user_0.rs".to_string()],
                 },
                 config: AuditConfig::default(),
+                includes: AuditIncludes::default(),
             },
         );
 
@@ -962,6 +1131,7 @@ mod tests {
                 max_results: 2,
                 scope: AuditScope::Project,
                 config: AuditConfig::default(),
+                includes: AuditIncludes::default(),
             },
         );
 
@@ -984,6 +1154,7 @@ mod tests {
                 max_results: 100,
                 scope: AuditScope::Project,
                 config,
+                includes: AuditIncludes::default(),
             },
         );
 
@@ -1007,6 +1178,7 @@ mod tests {
                 max_results: 100,
                 scope: AuditScope::Project,
                 config,
+                includes: AuditIncludes::default(),
             },
         );
 
@@ -1035,6 +1207,7 @@ mod tests {
                 max_results: 100,
                 scope: AuditScope::Project,
                 config,
+                includes: AuditIncludes::default(),
             },
         );
 
@@ -1053,10 +1226,15 @@ mod tests {
 
             [audit.rules]
             "file.large" = "off"
+            "dead_code.candidate" = "warning"
 
             [audit.ignore]
             paths = ["vendor/**"]
             findings = ["dependency.hotspot:src/main.rs"]
+
+            [audit.dead_code]
+            ignore_symbols = ["handler"]
+            entrypoint_globs = ["routes/**"]
             "#,
         )
         .unwrap();
@@ -1065,11 +1243,17 @@ mod tests {
         assert_eq!(config.max_findings, 12);
         assert_eq!(config.thresholds.large_file_warning, 10);
         assert_eq!(config.rules.file_large, RuleSetting::Off);
+        assert_eq!(config.rules.dead_code_candidate, RuleSetting::Warning);
         assert_eq!(config.ignore.paths, vec!["vendor/**"]);
         assert!(config
             .ignore
             .findings
             .contains("dependency.hotspot:src/main.rs"));
+        assert!(config.dead_code.ignore_symbols.contains("handler"));
+        assert!(config
+            .dead_code
+            .entrypoint_globs
+            .contains(&"routes/**".to_string()));
     }
 
     #[test]
@@ -1095,5 +1279,97 @@ mod tests {
         .unwrap();
 
         assert!(AuditConfig::from_file(parsed).is_err());
+    }
+
+    #[test]
+    fn dead_code_candidates_are_disabled_by_default() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/helper.rs", "fn unused_helper() {}\n");
+
+        let report = run_audit(&engine, AuditOptions::default());
+
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.rule == "dead_code.candidate"));
+    }
+
+    #[test]
+    fn include_dead_code_reports_internal_unreferenced_symbols() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/helper.rs", "fn unused_helper() {}\n");
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                includes: AuditIncludes { dead_code: true },
+                ..AuditOptions::default()
+            },
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.rule == "dead_code.candidate" && finding.path == "src/helper.rs"
+        }));
+    }
+
+    #[test]
+    fn dead_code_candidates_skip_referenced_symbols() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/helper.rs",
+            "fn used_helper() {}\nfn caller() { used_helper(); }\n",
+        );
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                includes: AuditIncludes { dead_code: true },
+                ..AuditOptions::default()
+            },
+        );
+
+        assert!(!report.findings.iter().any(|finding| {
+            finding.rule == "dead_code.candidate" && finding.id.contains("used_helper")
+        }));
+    }
+
+    #[test]
+    fn dead_code_candidates_skip_entrypoint_paths() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/main.rs", "fn unused_helper() {}\n");
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                includes: AuditIncludes { dead_code: true },
+                ..AuditOptions::default()
+            },
+        );
+
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.rule == "dead_code.candidate"));
+    }
+
+    #[test]
+    fn dead_code_candidates_can_be_enabled_by_config() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/helper.rs", "fn unused_helper() {}\n");
+        let mut config = AuditConfig::default();
+        config.rules.dead_code_candidate = RuleSetting::Warning;
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                config,
+                ..AuditOptions::default()
+            },
+        );
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.rule == "dead_code.candidate"));
     }
 }

@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lexa::engine::{self, SearchOptions};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
 use lexa::{audit, edit, mcp, pipeline, snapshot, store};
@@ -206,6 +206,9 @@ enum Commands {
 
         #[arg(long)]
         no_config: bool,
+
+        #[arg(long, value_enum)]
+        include: Vec<AuditInclude>,
     },
 
     #[command(
@@ -346,12 +349,14 @@ fn main() -> Result<()> {
             strict,
             ref config,
             no_config,
+            ref include,
         } => cmd_audit(
             max,
             since.as_deref(),
             strict,
             config.as_ref(),
             no_config,
+            include,
             &cli,
         ),
         Commands::Upgrade {
@@ -1241,6 +1246,7 @@ fn cmd_audit(
     strict: bool,
     config_path: Option<&PathBuf>,
     no_config: bool,
+    include: &[AuditInclude],
     cli: &Cli,
 ) -> Result<()> {
     let engine = load_engine(cli);
@@ -1260,6 +1266,7 @@ fn cmd_audit(
             max_results: max.unwrap_or(0),
             scope,
             config,
+            includes: audit_includes(include),
         },
     );
 
@@ -1274,6 +1281,18 @@ fn cmd_audit(
     }
 
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AuditInclude {
+    #[value(name = "dead-code")]
+    DeadCode,
+}
+
+fn audit_includes(values: &[AuditInclude]) -> audit::AuditIncludes {
+    audit::AuditIncludes {
+        dead_code: values.contains(&AuditInclude::DeadCode),
+    }
 }
 
 fn cmd_upgrade(version: &str, install_dir: Option<&PathBuf>, cli: &Cli) -> Result<()> {

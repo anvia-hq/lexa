@@ -768,6 +768,7 @@ impl McpServer {
             config_path.as_deref(),
             opt_bool(args, "no_config").unwrap_or(false),
         )?;
+        let includes = audit_includes(args)?;
         let scope = if let Some(base) = opt_str(args, "since") {
             audit::AuditScope::GitSince {
                 base: base.to_string(),
@@ -782,6 +783,7 @@ impl McpServer {
                 max_results,
                 scope,
                 config,
+                includes,
             },
         );
         let text = audit::render_audit_report(&report);
@@ -1022,7 +1024,7 @@ fn tools() -> Value {
         tool(
             "audit",
             "Run a review-oriented architecture audit over the indexed project.",
-            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string"},"no_config":{"type":"boolean"}},"required":[]})
+            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string"},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]})
         ),
         tool(
             "pipeline",
@@ -1072,6 +1074,23 @@ fn opt_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key)
         .and_then(Value::as_u64)
         .and_then(|n| usize::try_from(n).ok())
+}
+
+fn audit_includes(args: &Value) -> Result<audit::AuditIncludes> {
+    let mut includes = audit::AuditIncludes::default();
+    let Some(values) = args.get("include").and_then(Value::as_array) else {
+        return Ok(includes);
+    };
+
+    for value in values {
+        match value.as_str() {
+            Some("dead-code") => includes.dead_code = true,
+            Some(other) => bail!("unknown audit include: {other}"),
+            None => bail!("audit include values must be strings"),
+        }
+    }
+
+    Ok(includes)
 }
 
 fn parse_edit_op(op: &str) -> Result<EditOp> {
