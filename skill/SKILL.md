@@ -187,24 +187,24 @@ MCP tools exposed by Lexa:
 
 | Tool | Use |
 | --- | --- |
-| `lexa_files` | Whole-repo file map |
-| `lexa_list` | Directory listing |
-| `lexa_glob` | Glob path matching |
-| `lexa_path_search` | Fuzzy file path search |
-| `lexa_outline` | File symbols and imports |
-| `lexa_symbol_defs` | Exact symbol definitions |
-| `lexa_word_refs` | Exact word or identifier references |
-| `lexa_text_search` | Text search with regex/scope/compact/path filters |
-| `lexa_callers` | Non-definition call sites |
-| `lexa_brief` | Task-focused context |
-| `lexa_trace_deps` | Import dependency tracing |
-| `lexa_read` | Hash-aware file reads |
-| `lexa_patch` | Atomic line edits |
-| `lexa_create` | Safe file creation |
-| `lexa_changes` | Changed files since sequence |
-| `lexa_recent` | Recently modified files |
-| `lexa_status` | Index status |
-| `lexa_pipeline` | Composable query pipeline |
+| `files` | Whole-repo file map |
+| `list` | Directory listing |
+| `glob` | Glob path matching |
+| `path_search` | Fuzzy file path search |
+| `outline` | File symbols and imports |
+| `symbol_defs` | Exact symbol definitions |
+| `word_refs` | Exact word or identifier references |
+| `text_search` | Text search with regex/scope/compact/path filters |
+| `callers` | Non-definition call sites |
+| `brief` | Task-focused context |
+| `trace_deps` | Import dependency tracing |
+| `read` | Hash-aware file reads |
+| `patch` | Atomic line edits |
+| `create` | Safe file creation |
+| `changes` | Changed files since sequence |
+| `recent` | Recently modified files |
+| `status` | Index status |
+| `pipeline` | Composable query pipeline |
 
 ## Verification
 

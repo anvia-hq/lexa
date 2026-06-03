@@ -131,29 +131,29 @@ impl McpServer {
 
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<ToolOutput> {
         match name {
-            "lexa_files" => Ok(self.tool_map(args)),
-            "lexa_list" => Ok(self.tool_list(opt_str(args, "path").unwrap_or(""))),
-            "lexa_glob" => self.tool_glob(req_str(args, "pattern")?),
-            "lexa_path_search" => self.tool_find_path(
+            "files" => Ok(self.tool_map(args)),
+            "list" => Ok(self.tool_list(opt_str(args, "path").unwrap_or(""))),
+            "glob" => self.tool_glob(req_str(args, "pattern")?),
+            "path_search" => self.tool_find_path(
                 req_any_str(args, &["query", "path", "pattern", "name"])?,
                 opt_usize(args, "max_results")
                     .or_else(|| opt_usize(args, "max"))
                     .unwrap_or(20),
             ),
-            "lexa_outline" => self.tool_outline(req_str(args, "path")?),
-            "lexa_symbol_defs" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
-            "lexa_word_refs" => self.tool_find_word(req_any_str(args, &["word", "query"])?),
-            "lexa_text_search" => self.tool_search(args),
-            "lexa_callers" => self.tool_find_callers(req_any_str(args, &["name", "query"])?),
-            "lexa_brief" => self.tool_brief(req_any_str(args, &["task", "query"])?),
-            "lexa_trace_deps" => self.tool_trace_deps(args),
-            "lexa_read" => self.tool_read(args),
-            "lexa_patch" => self.tool_patch(args),
-            "lexa_create" => self.tool_create(args),
-            "lexa_changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
-            "lexa_recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
-            "lexa_status" => Ok(self.tool_status()),
-            "lexa_pipeline" => self.tool_pipeline(args),
+            "outline" => self.tool_outline(req_str(args, "path")?),
+            "symbol_defs" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
+            "word_refs" => self.tool_find_word(req_any_str(args, &["word", "query"])?),
+            "text_search" => self.tool_search(args),
+            "callers" => self.tool_find_callers(req_any_str(args, &["name", "query"])?),
+            "brief" => self.tool_brief(req_any_str(args, &["task", "query"])?),
+            "trace_deps" => self.tool_trace_deps(args),
+            "read" => self.tool_read(args),
+            "patch" => self.tool_patch(args),
+            "create" => self.tool_create(args),
+            "changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
+            "recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
+            "status" => Ok(self.tool_status()),
+            "pipeline" => self.tool_pipeline(args),
             _ => bail!("unknown tool: {name}"),
         }
     }
@@ -903,92 +903,92 @@ fn json_rpc_error(id: Option<Value>, code: i32, message: &str) -> Value {
 fn tools() -> Value {
     json!([
         tool(
-            "lexa_files",
+            "files",
             "List indexed files with language, line, and symbol counts.",
             json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":[]})
         ),
         tool(
-            "lexa_list",
+            "list",
             "List immediate children of a directory.",
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":[]})
         ),
         tool(
-            "lexa_glob",
+            "glob",
             "Match indexed paths using a glob pattern.",
             json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})
         ),
         tool(
-            "lexa_path_search",
+            "path_search",
             "Fuzzy path search against indexed file names.",
             json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":["query"]})
         ),
         tool(
-            "lexa_outline",
+            "outline",
             "Return symbols and imports for one file.",
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
         ),
         tool(
-            "lexa_symbol_defs",
+            "symbol_defs",
             "Find exact symbol definitions.",
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
         ),
         tool(
-            "lexa_word_refs",
+            "word_refs",
             "Find exact identifier or word references.",
             json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
         ),
         tool(
-            "lexa_text_search",
+            "text_search",
             "Search indexed text by substring or regex. Supports scope, compact, paths_only, and path_glob.",
             json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"regex":{"type":"boolean"},"scope":{"type":"boolean"},"compact":{"type":"boolean"},"paths_only":{"type":"boolean"},"path_glob":{"type":"string"}},"required":["query"]})
         ),
         tool(
-            "lexa_callers",
+            "callers",
             "Find non-definition call sites for a symbol.",
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
         ),
         tool(
-            "lexa_brief",
+            "brief",
             "Compose task-focused context from symbols and search snippets.",
             json!({"type":"object","properties":{"task":{"type":"string"}},"required":["task"]})
         ),
         tool(
-            "lexa_trace_deps",
+            "trace_deps",
             "Trace imported_by or depends_on relationships.",
             json!({"type":"object","properties":{"path":{"type":"string"},"direction":{"type":"string","enum":["imported_by","depends_on"]},"transitive":{"type":"boolean"}},"required":["path"]})
         ),
         tool(
-            "lexa_read",
+            "read",
             "Read file contents with optional line range, compact mode, and if_hash.",
             json!({"type":"object","properties":{"path":{"type":"string"},"line_start":{"type":"integer"},"line_end":{"type":"integer"},"compact":{"type":"boolean"},"if_hash":{"type":"string"}},"required":["path"]})
         ),
         tool(
-            "lexa_patch",
+            "patch",
             "Apply line-based replace, insert, or delete with optional if_hash and dry_run.",
             json!({"type":"object","properties":{"path":{"type":"string"},"op":{"type":"string","enum":["replace","insert","delete"]},"content":{"type":"string"},"range_start":{"type":"integer"},"range_end":{"type":"integer"},"after":{"type":"integer"},"if_hash":{"type":"string"},"dry_run":{"type":"boolean"}},"required":["path","op"]})
         ),
         tool(
-            "lexa_create",
+            "create",
             "Create a file safely. Refuses overwrites unless overwrite is true.",
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"overwrite":{"type":"boolean"},"dry_run":{"type":"boolean"}},"required":["path"]})
         ),
         tool(
-            "lexa_changes",
+            "changes",
             "List files changed since a sequence number.",
             json!({"type":"object","properties":{"since":{"type":"integer"}},"required":[]})
         ),
         tool(
-            "lexa_recent",
+            "recent",
             "List recently modified files.",
             json!({"type":"object","properties":{"limit":{"type":"integer"}},"required":[]})
         ),
         tool(
-            "lexa_status",
+            "status",
             "Return index status.",
             json!({"type":"object","properties":{},"required":[]})
         ),
         tool(
-            "lexa_pipeline",
+            "pipeline",
             "Run a composable pipeline string such as 'glob src/**/*.rs | search main | limit 5'.",
             json!({"type":"object","properties":{"pipeline":{"type":"string"},"query":{"type":"string"},"steps":{"type":"array","items":{"type":"string"}}},"required":[]})
         )
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_use_clear_breaking_names() {
+    fn tools_use_unprefixed_names() {
         let tools = tools();
         let names = tools
             .as_array()
@@ -1199,13 +1199,14 @@ mod tests {
             .filter_map(|tool| tool.get("name").and_then(Value::as_str))
             .collect::<Vec<_>>();
 
-        assert!(names.contains(&"lexa_files"));
-        assert!(names.contains(&"lexa_path_search"));
-        assert!(names.contains(&"lexa_symbol_defs"));
-        assert!(names.contains(&"lexa_word_refs"));
-        assert!(names.contains(&"lexa_text_search"));
-        assert!(names.contains(&"lexa_callers"));
-        assert!(names.contains(&"lexa_create"));
+        assert!(names.contains(&"files"));
+        assert!(names.contains(&"path_search"));
+        assert!(names.contains(&"symbol_defs"));
+        assert!(names.contains(&"word_refs"));
+        assert!(names.contains(&"text_search"));
+        assert!(names.contains(&"callers"));
+        assert!(names.contains(&"create"));
+        assert!(names.iter().all(|name| !name.starts_with("lexa_")));
         assert!(!names.contains(&"lexa_map"));
         assert!(!names.contains(&"lexa_find_path"));
         assert!(!names.contains(&"lexa_find_symbol"));
