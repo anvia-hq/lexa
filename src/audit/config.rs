@@ -152,6 +152,7 @@ pub struct AuditRules {
     pub file_large: RuleSetting,
     pub symbol_large: RuleSetting,
     pub dependency_hotspot: RuleSetting,
+    pub dependency_unresolved_import: RuleSetting,
     pub dead_code_candidate: RuleSetting,
 }
 
@@ -162,6 +163,7 @@ impl Default for AuditRules {
             file_large: RuleSetting::Warning,
             symbol_large: RuleSetting::Warning,
             dependency_hotspot: RuleSetting::Warning,
+            dependency_unresolved_import: RuleSetting::High,
             dead_code_candidate: RuleSetting::Off,
         }
     }
@@ -392,6 +394,7 @@ impl AuditRules {
                 "file.large" => self.file_large = setting,
                 "symbol.large" => self.symbol_large = setting,
                 "dependency.hotspot" => self.dependency_hotspot = setting,
+                "dependency.unresolved_import" => self.dependency_unresolved_import = setting,
                 "dead_code.candidate" => self.dead_code_candidate = setting,
                 _ => bail!("unknown audit rule '{rule}'"),
             }

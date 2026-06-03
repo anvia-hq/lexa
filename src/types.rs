@@ -211,6 +211,14 @@ impl FileOutline {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnresolvedImport {
+    pub path: String,
+    pub import: String,
+    pub line_start: Option<u32>,
+    pub line_end: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub path: String,
     pub line_num: u32,

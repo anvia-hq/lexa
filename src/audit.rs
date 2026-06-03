@@ -164,6 +164,31 @@ mod tests {
     }
 
     #[test]
+    fn audit_flags_unresolved_local_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/app.ts",
+            "import { selectedModel } from './model-settings/selected-model';\n",
+        );
+        engine.index_file(
+            "src/model-settings/lib/selected-model.ts",
+            "export const selectedModel = 'moved';\n",
+        );
+
+        let report = run_audit(&engine, AuditOptions::default());
+
+        assert_eq!(report.verdict, AuditVerdict::Warn);
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.rule == "dependency.unresolved_import")
+            .expect("expected unresolved import finding");
+        assert_eq!(finding.path, "src/app.ts");
+        assert_eq!(finding.line_start, Some(1));
+        assert_eq!(finding.severity, AuditSeverity::High);
+    }
+
+    #[test]
     fn normalize_git_changed_path_strips_worktree_prefix() {
         assert_eq!(
             normalize_git_changed_path("crates/app/src/main.rs", "crates/app/"),

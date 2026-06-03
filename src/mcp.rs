@@ -364,6 +364,7 @@ impl McpServer {
         let Some(outline) = self.engine.get_outline(&path) else {
             bail!("file not found: {path}");
         };
+        let unresolved_imports = self.engine.get_unresolved_imports(&path);
 
         let mut out = format!(
             "{} ({} lines, {} symbols)\nLanguage: {}\n",
@@ -376,6 +377,16 @@ impl McpServer {
             out.push_str("\nImports:\n");
             for import in &outline.imports {
                 out.push_str(&format!("  {import}\n"));
+            }
+        }
+        if !unresolved_imports.is_empty() {
+            out.push_str("\nUnresolved local imports:\n");
+            for import in &unresolved_imports {
+                let line = import
+                    .line_start
+                    .map(|line| format!("L{line}: "))
+                    .unwrap_or_default();
+                out.push_str(&format!("  {line}{}\n", import.import));
             }
         }
         if !outline.symbols.is_empty() {
@@ -402,6 +413,7 @@ impl McpServer {
                 "byte_size": outline.byte_size,
                 "symbol_count": outline.symbols.len(),
                 "imports": outline.imports,
+                "unresolved_imports": unresolved_imports,
                 "symbols": outline.symbols,
             }),
         ))
@@ -546,6 +558,11 @@ impl McpServer {
             ("imported_by", false) => self.engine.get_imported_by(&path),
             _ => bail!("direction must be imported_by or depends_on"),
         };
+        let unresolved_imports = if direction == "depends_on" {
+            self.engine.get_unresolved_imports(&path)
+        } else {
+            Vec::new()
+        };
 
         let text = if deps.is_empty() {
             format!("No {direction} dependencies for {path}")
@@ -560,6 +577,7 @@ impl McpServer {
                 "transitive": transitive,
                 "count": deps.len(),
                 "dependencies": deps,
+                "unresolved_imports": unresolved_imports,
             }),
         ))
     }

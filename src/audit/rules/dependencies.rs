@@ -4,6 +4,53 @@ use crate::audit::config::{AuditConfig, AuditThresholds};
 use crate::audit::report::{AuditActionability, AuditFinding, AuditNextStep, AuditSeverity};
 use serde_json::json;
 
+pub(crate) fn audit_unresolved_imports(
+    engine: &Engine,
+    config: &AuditConfig,
+    findings: &mut Vec<AuditFinding>,
+) {
+    let Some(severity) = config
+        .rules
+        .dependency_unresolved_import
+        .finding_severity(AuditSeverity::High)
+    else {
+        return;
+    };
+
+    for import in engine.unresolved_imports() {
+        let line = import.line_start.unwrap_or(0);
+        findings.push(AuditFinding {
+            id: format!(
+                "dependency.unresolved_import:{}:{}:{}",
+                import.path, line, import.import
+            ),
+            rule: "dependency.unresolved_import".to_string(),
+            severity,
+            actionability: AuditActionability::Actionable,
+            secondary: false,
+            title: "Unresolved local import".to_string(),
+            path: import.path.clone(),
+            line_start: import.line_start,
+            line_end: import.line_end,
+            message:
+                "This local import did not resolve to any indexed file with the requested path."
+                    .to_string(),
+            evidence: vec![format!("import: {}", import.import)],
+            related_paths: Vec::new(),
+            suggestion:
+                "Update the import path to the moved module or create the missing module file."
+                    .to_string(),
+            next_steps: vec![
+                AuditNextStep::new("outline", json!({ "path": import.path })),
+                AuditNextStep::new(
+                    "trace_deps",
+                    json!({ "path": import.path, "direction": "depends_on" }),
+                ),
+            ],
+        });
+    }
+}
+
 pub(crate) fn audit_dependency_hotspots(
     engine: &Engine,
     config: &AuditConfig,
