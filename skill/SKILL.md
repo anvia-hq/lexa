@@ -242,15 +242,34 @@ Use `--since <git-ref>` for review scope and `--strict` when the user wants a
 CI-style non-zero exit on high-severity findings.
 Use `--include dead-code` only when the user explicitly wants unused-code
 candidates; treat those findings as candidates, not removal instructions.
+Audit findings include `actionability` and `next_steps`. Treat `actionable` as a
+likely refactor target, `candidate` as verify-before-change, `expected` as normal
+shared infrastructure or composition-root coupling, and `risk_note` as edit with
+care but do not assume refactoring is needed.
+Human-readable audit output is grouped by actionability. Treat `secondary`
+findings as supporting context for a stronger finding on the same file, not a
+separate recommendation.
+For JSON/MCP output, summarize from `groups.actionable`, `groups.candidates`,
+`groups.risk_notes`, `groups.expected`, and `groups.secondary` before consulting
+the flat `findings` array.
+Dead-code candidates are source-symbol focused by default. Lexa suppresses
+style/config/data/tooling/test/generated/declaration files so CSS variables,
+JSON keys, package scripts, and framework mount selectors do not dominate the
+audit.
 
 Audit config is optional. Lexa discovers `lexa.toml` or `.lexa/audit.toml`
 unless `--config` or `--no-config` is used. Dotted rule IDs must be quoted in
-TOML, for example:
+TOML. Cross-language generated artifacts, build outputs, lockfiles, and
+dependency folders are ignored by default; set `audit.ignore.generated = false`
+only when the user explicitly wants generated output included. For example:
 
 ```toml
 [audit.rules]
 "file.large" = "off"
 "dead_code.candidate" = "warning"
+
+[audit.ignore]
+generated = true
 
 [audit.dead_code]
 ignore_symbols = ["main", "handler", "setup"]

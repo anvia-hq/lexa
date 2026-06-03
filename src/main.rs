@@ -1263,7 +1263,7 @@ fn cmd_audit(
     let report = audit::run_audit(
         &engine,
         audit::AuditOptions {
-            max_results: max.unwrap_or(0),
+            max_results: max,
             scope,
             config,
             includes: audit_includes(include),

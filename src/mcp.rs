@@ -759,9 +759,7 @@ impl McpServer {
     }
 
     fn tool_audit(&self, args: &Value) -> Result<ToolOutput> {
-        let max_results = opt_usize(args, "max_results")
-            .or_else(|| opt_usize(args, "max"))
-            .unwrap_or(0);
+        let max_results = opt_usize(args, "max_results").or_else(|| opt_usize(args, "max"));
         let config_path = opt_str(args, "config").map(PathBuf::from);
         let config = audit::load_audit_config(
             &self.root,

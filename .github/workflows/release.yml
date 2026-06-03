@@ -66,7 +66,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }}
-    if: github.event_name != 'pull_request'
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: check
     strategy:
       fail-fast: false
@@ -126,10 +126,6 @@ jobs:
           set -euo pipefail
 
           version="${GITHUB_REF_NAME#v}"
-          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            version="dev-${GITHUB_SHA::7}"
-          fi
-
           package_dir="dist/${ARCHIVE_NAME}-${version}"
           mkdir -p "${package_dir}"
           cp "target/${TARGET}/release/${EXE_NAME}" "${package_dir}/"
