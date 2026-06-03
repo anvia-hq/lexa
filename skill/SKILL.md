@@ -231,7 +231,12 @@ large files, large symbols, and dependency hotspots from the indexed graph.
 lexa audit
 lexa --json audit
 lexa audit --max 50
+lexa audit --since main
+lexa audit --since main --strict
 ```
+
+Use `--since <git-ref>` for review scope and `--strict` when the user wants a
+CI-style non-zero exit on high-severity findings.
 
 ## Verification
 

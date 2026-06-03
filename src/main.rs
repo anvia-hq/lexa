@@ -194,6 +194,12 @@ enum Commands {
     Audit {
         #[arg(short, long, default_value = "100")]
         max: usize,
+
+        #[arg(long)]
+        since: Option<String>,
+
+        #[arg(long)]
+        strict: bool,
     },
 
     #[command(
@@ -328,7 +334,11 @@ fn main() -> Result<()> {
         ),
         Commands::Glob { ref pattern } => cmd_glob(pattern, &cli),
         Commands::Status => cmd_status(&cli),
-        Commands::Audit { max } => cmd_audit(max, &cli),
+        Commands::Audit {
+            max,
+            ref since,
+            strict,
+        } => cmd_audit(max, since.as_deref(), strict, &cli),
         Commands::Upgrade {
             ref version,
             ref install_dir,
@@ -1210,15 +1220,35 @@ fn cmd_status(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_audit(max: usize, cli: &Cli) -> Result<()> {
+fn cmd_audit(max: usize, since: Option<&str>, strict: bool, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
-    let report = audit::run_audit(&engine, audit::AuditOptions { max_results: max });
+    let scope = if let Some(base) = since {
+        let root = std::env::current_dir()?;
+        audit::AuditScope::GitSince {
+            base: base.to_string(),
+            changed_files: audit::changed_files_since(&root, base)?,
+        }
+    } else {
+        audit::AuditScope::Project
+    };
+    let report = audit::run_audit(
+        &engine,
+        audit::AuditOptions {
+            max_results: max,
+            scope,
+        },
+    );
 
     if cli.json {
-        return print_json(json!(report));
+        print_json(json!(report))?;
+    } else {
+        print!("{}", audit::render_audit_report(&report));
     }
 
-    print!("{}", audit::render_audit_report(&report));
+    if strict && report.summary.high > 0 {
+        std::process::exit(1);
+    }
+
     Ok(())
 }
 

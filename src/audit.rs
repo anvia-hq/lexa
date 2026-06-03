@@ -1,7 +1,9 @@
 use crate::engine::Engine;
 use crate::types::{Symbol, SymbolKind};
+use anyhow::{bail, Result};
 use hashbrown::{HashMap, HashSet};
 use serde::Serialize;
+use std::path::Path;
 
 const DEFAULT_MAX_FINDINGS: usize = 100;
 const LARGE_FILE_WARNING_LINES: u32 = 800;
@@ -15,15 +17,51 @@ const HOTSPOT_FAN_OUT_HIGH: usize = 50;
 const MAX_CYCLE_DEPTH: usize = 32;
 const MAX_INTERNAL_CYCLES: usize = 1000;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AuditOptions {
     pub max_results: usize,
+    pub scope: AuditScope,
 }
 
 impl Default for AuditOptions {
     fn default() -> Self {
         Self {
             max_results: DEFAULT_MAX_FINDINGS,
+            scope: AuditScope::Project,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuditScopeReport {
+    Project,
+    GitSince {
+        base: String,
+        changed_files: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuditScope {
+    Project,
+    GitSince {
+        base: String,
+        changed_files: Vec<String>,
+    },
+}
+
+impl AuditScope {
+    fn report(&self) -> AuditScopeReport {
+        match self {
+            Self::Project => AuditScopeReport::Project,
+            Self::GitSince {
+                base,
+                changed_files,
+            } => AuditScopeReport::GitSince {
+                base: base.clone(),
+                changed_files: changed_files.clone(),
+            },
         }
     }
 }
@@ -68,6 +106,7 @@ pub struct AuditFinding {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditReport {
+    pub scope: AuditScopeReport,
     pub verdict: AuditVerdict,
     pub summary: AuditSummary,
     pub findings: Vec<AuditFinding>,
@@ -85,6 +124,8 @@ pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {
     audit_large_files(engine, &mut findings);
     audit_large_symbols(engine, &mut findings);
     audit_dependency_hotspots(engine, &mut findings);
+
+    findings = filter_findings_by_scope(engine, findings, &options.scope);
 
     findings.sort_by(|a, b| {
         b.severity
@@ -105,6 +146,7 @@ pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {
     findings.truncate(max_results);
 
     AuditReport {
+        scope: options.scope.report(),
         verdict: if total_findings == 0 {
             AuditVerdict::Pass
         } else {
@@ -132,6 +174,17 @@ pub fn render_audit_report(report: &AuditReport) -> String {
     }
     out.push('\n');
 
+    if let AuditScopeReport::GitSince {
+        base,
+        changed_files,
+    } = &report.scope
+    {
+        out.push_str(&format!(
+            "scope: git since {base}, {} changed file(s)\n",
+            changed_files.len()
+        ));
+    }
+
     if report.findings.is_empty() {
         out.push_str("No audit findings.\n");
         return out;
@@ -158,6 +211,58 @@ pub fn render_audit_report(report: &AuditReport) -> String {
     }
 
     out
+}
+
+pub fn changed_files_since(root: &Path, base: &str) -> Result<Vec<String>> {
+    let prefix = git_prefix(root).unwrap_or_default();
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("diff")
+        .arg("--name-only")
+        .arg("--diff-filter=ACMRT")
+        .arg(format!("{base}...HEAD"))
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("git diff failed for base '{base}': {stderr}");
+    }
+
+    let mut files = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| normalize_git_changed_path(line.trim(), &prefix))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn git_prefix(root: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("--show-prefix")
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("git rev-parse failed: {stderr}");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .replace('\\', "/"))
+}
+
+fn normalize_git_changed_path(path: &str, prefix: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    if prefix.is_empty() {
+        return Some(path);
+    }
+    path.strip_prefix(prefix).map(ToString::to_string)
 }
 
 fn audit_cycles(engine: &Engine, findings: &mut Vec<AuditFinding>) {
@@ -286,6 +391,49 @@ fn hotspot_severity(fan_in: usize, fan_out: usize) -> Option<AuditSeverity> {
     }
 }
 
+fn filter_findings_by_scope(
+    engine: &Engine,
+    findings: Vec<AuditFinding>,
+    scope: &AuditScope,
+) -> Vec<AuditFinding> {
+    let AuditScope::GitSince { changed_files, .. } = scope else {
+        return findings;
+    };
+    let changed = changed_files.iter().cloned().collect::<HashSet<_>>();
+    if changed.is_empty() {
+        return Vec::new();
+    }
+
+    findings
+        .into_iter()
+        .filter(|finding| is_finding_scope_relevant(engine, finding, &changed))
+        .collect()
+}
+
+fn is_finding_scope_relevant(
+    engine: &Engine,
+    finding: &AuditFinding,
+    changed: &HashSet<String>,
+) -> bool {
+    if changed.contains(&finding.path) {
+        return true;
+    }
+    if finding
+        .related_paths
+        .iter()
+        .any(|path| changed.contains(path))
+    {
+        return true;
+    }
+
+    changed.iter().any(|changed_path| {
+        engine.get_depends_on(changed_path).contains(&finding.path)
+            || engine.get_imported_by(changed_path).contains(&finding.path)
+            || engine.get_depends_on(&finding.path).contains(changed_path)
+            || engine.get_imported_by(&finding.path).contains(changed_path)
+    })
+}
+
 fn is_large_symbol_candidate(symbol: &Symbol) -> bool {
     matches!(
         symbol.kind,
@@ -402,6 +550,67 @@ mod tests {
     }
 
     #[test]
+    fn normalize_git_changed_path_strips_worktree_prefix() {
+        assert_eq!(
+            normalize_git_changed_path("crates/app/src/main.rs", "crates/app/"),
+            Some("src/main.rs".to_string())
+        );
+        assert_eq!(
+            normalize_git_changed_path("crates/core/src/lib.rs", "crates/app/"),
+            None
+        );
+    }
+
+    #[test]
+    fn audit_git_scope_keeps_findings_for_changed_paths() {
+        let mut engine = Engine::new(4);
+        let content = "line\n".repeat(LARGE_FILE_WARNING_LINES as usize);
+        engine.index_file("src/large.rs", &content);
+        engine.index_file("src/other.rs", &content);
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: 100,
+                scope: AuditScope::GitSince {
+                    base: "main".to_string(),
+                    changed_files: vec!["src/large.rs".to_string()],
+                },
+            },
+        );
+
+        assert_eq!(report.summary.total_findings, 1);
+        assert_eq!(report.findings[0].path, "src/large.rs");
+    }
+
+    #[test]
+    fn audit_git_scope_keeps_direct_dependency_context() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/core.rs", "pub fn core() {}\n");
+        for index in 0..HOTSPOT_FAN_IN_WARNING {
+            engine.index_file(
+                &format!("src/user_{index}.rs"),
+                "use crate::core;\nfn user() { core::core(); }\n",
+            );
+        }
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: 100,
+                scope: AuditScope::GitSince {
+                    base: "main".to_string(),
+                    changed_files: vec!["src/user_0.rs".to_string()],
+                },
+            },
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.rule == "dependency.hotspot" && finding.path == "src/core.rs"
+        }));
+    }
+
+    #[test]
     fn audit_flags_large_files_at_threshold() {
         let mut engine = Engine::new(4);
         let content = "line\n".repeat(LARGE_FILE_WARNING_LINES as usize);
@@ -457,7 +666,13 @@ mod tests {
             engine.index_file(&format!("src/large_{index}.rs"), &content);
         }
 
-        let report = run_audit(&engine, AuditOptions { max_results: 2 });
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: 2,
+                scope: AuditScope::Project,
+            },
+        );
 
         assert_eq!(report.summary.total_findings, 3);
         assert_eq!(report.summary.returned_findings, 2);

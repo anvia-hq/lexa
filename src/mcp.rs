@@ -154,7 +154,7 @@ impl McpServer {
             "changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
             "recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
             "status" => Ok(self.tool_status()),
-            "audit" => Ok(self.tool_audit(args)),
+            "audit" => self.tool_audit(args),
             "pipeline" => self.tool_pipeline(args),
             _ => bail!("unknown tool: {name}"),
         }
@@ -758,13 +758,21 @@ impl McpServer {
         )
     }
 
-    fn tool_audit(&self, args: &Value) -> ToolOutput {
+    fn tool_audit(&self, args: &Value) -> Result<ToolOutput> {
         let max_results = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
             .unwrap_or(100);
-        let report = audit::run_audit(&self.engine, AuditOptions { max_results });
+        let scope = if let Some(base) = opt_str(args, "since") {
+            audit::AuditScope::GitSince {
+                base: base.to_string(),
+                changed_files: audit::changed_files_since(&self.root, base)?,
+            }
+        } else {
+            audit::AuditScope::Project
+        };
+        let report = audit::run_audit(&self.engine, AuditOptions { max_results, scope });
         let text = audit::render_audit_report(&report);
-        ToolOutput::new(text, json!(report))
+        Ok(ToolOutput::new(text, json!(report)))
     }
 
     fn tool_pipeline(&self, args: &Value) -> Result<ToolOutput> {
@@ -1001,7 +1009,7 @@ fn tools() -> Value {
         tool(
             "audit",
             "Run a review-oriented architecture audit over the indexed project.",
-            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":[]})
+            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"}},"required":[]})
         ),
         tool(
             "pipeline",

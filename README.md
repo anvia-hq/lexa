@@ -169,10 +169,15 @@ Audit a project for structural review risks:
 lexa audit
 lexa --json audit
 lexa audit --max 50
+lexa audit --since main
+lexa audit --since main --strict
 ```
 
 `audit` is read-only. The first iteration flags import cycles, large files,
-large symbols, and dependency hotspots from the indexed graph.
+large symbols, and dependency hotspots from the indexed graph. Use `--since` to
+scope findings to changed files and their direct dependency context. Use
+`--strict` to return a non-zero exit code when high-severity findings are
+present.
 
 ## MCP
 
