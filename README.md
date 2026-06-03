@@ -21,6 +21,7 @@ atomic line-based patches.
 lexa index .
 lexa text-search "handle_request" --scope
 lexa outline src/main.rs
+lexa audit
 lexa mcp .
 ```
 
@@ -139,6 +140,7 @@ lexa --graph /tmp/project.graph.lexa text-search "Parser"
 | `changes [since]` | Show session-local changes |
 | `recent` | Show recently modified files |
 | `status` | Show index status |
+| `audit` | Run a review-oriented architecture audit |
 | `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Refresh graph on file changes |
 | `pipeline <pipeline>` | Chain query operations |
@@ -159,6 +161,83 @@ Safe edit example:
 lexa read src/main.rs --hash
 lexa patch src/main.rs replace -L 12 --if-hash <hash> --content '    println!("updated");'
 lexa create src/new_file.rs --content 'pub fn new_file() {}'
+```
+
+Audit a project for structural review risks:
+
+```bash
+lexa audit
+lexa --json audit
+lexa audit --max 50
+lexa audit --since main
+lexa audit --since main --strict
+lexa audit --config lexa.toml
+lexa audit --no-config
+lexa audit --include dead-code
+```
+
+`audit` is read-only. It flags import cycles, large files, large symbols, and
+dependency hotspots from the indexed graph. Use `--since` to scope findings to
+changed files and their direct dependency context. Use `--strict` to return a
+non-zero exit code when high-severity findings are present. Config is optional;
+Lexa discovers `lexa.toml` or `.lexa/audit.toml` unless `--config` or
+`--no-config` is used. Dead-code candidates are read-only and off by default;
+enable them with `--include dead-code` or config. Generated artifacts are
+ignored by default across common languages and frameworks, including generated
+directories, protobuf/gRPC outputs, Android/Qt/Dart/C#/OpenAPI/GraphQL outputs,
+lockfiles, build output, dependency folders, and common tool-specific files like
+`worker-configuration.d.ts`, `routeTree.gen.ts`, and Drizzle metadata.
+
+Findings include an `actionability` classification and `next_steps` hints in
+JSON/MCP output. `actionable` means the finding is a likely refactor target,
+`candidate` means verify before changing, `expected` means the dependency shape
+is normal for a shared primitive or composition root, and `risk_note` means edit
+carefully but do not assume a refactor is required.
+Human-readable audit output is grouped by actionability. When a lower-priority
+finding appears on the same file as a stronger actionable finding, it is marked
+as `secondary` so agents keep it as context instead of treating it as another
+independent action item.
+JSON and MCP output include both the compatibility-preserving flat `findings`
+array and grouped buckets under `groups`: `primary`, `secondary`, `actionable`,
+`candidates`, `risk_notes`, and `expected`. Agents should summarize from
+`groups` first and use `findings` only for full-detail traversal.
+
+Dead-code candidates are limited to source-code symbols by default. Lexa skips
+style sheets, data/config files, package manifests, common framework config
+files, tests, generated artifacts, and declaration files to avoid reporting
+tooling keys, CSS tokens, or framework mount selectors as unused code.
+
+Minimal audit config:
+
+```toml
+[audit]
+max_findings = 100
+
+[audit.thresholds]
+large_file_warning = 800
+large_file_high = 1500
+large_symbol_warning = 120
+large_symbol_high = 250
+fan_in_warning = 15
+fan_in_high = 40
+fan_out_warning = 20
+fan_out_high = 50
+
+[audit.rules]
+"architecture.cycle" = "high"
+"file.large" = "warning"
+"symbol.large" = "warning"
+"dependency.hotspot" = "warning"
+"dead_code.candidate" = "off"
+
+[audit.ignore]
+generated = true
+paths = ["target/**", "vendor/**"]
+findings = ["dependency.hotspot:src/main.rs"]
+
+[audit.dead_code]
+ignore_symbols = ["main", "handler", "setup"]
+entrypoint_globs = ["src/main.*", "src/bin/**", "pages/**", "app/**"]
 ```
 
 ## MCP
@@ -234,17 +313,17 @@ Smoke benchmark baseline from June 3, 2026 on a generated Rust fixture corpus:
 
 | Benchmark | Corpus | Time |
 | --- | ---: | ---: |
-| `project_index/100` | 100 files | ~20 ms |
-| `project_index/500` | 500 files | ~393 ms |
-| `search/exact_word` | 1,000 files | ~60 us |
-| `search/unique_token` | 1,000 files | ~187 us |
-| `search/regex` | 1,000 files | ~57 us |
-| `search/rich_scoped` | 1,000 files | ~96 us |
-| `search/symbol_defs` | 1,000 files | ~95 ns |
-| `search/callers` | 1,000 files | ~106 us |
-| `incremental_edit/single_file_reindex` | 500 files | ~350 ms |
-| `snapshot/write` | 500 files | ~7.2 ms |
-| `snapshot/load_into_engine` | 500 files | ~8.2 ms |
+| `project_index/100` | 100 files | ~5.7 ms |
+| `project_index/500` | 500 files | ~30.8 ms |
+| `search/exact_word` | 1,000 files | ~57.6 us |
+| `search/unique_token` | 1,000 files | ~192 us |
+| `search/regex` | 1,000 files | ~54.1 us |
+| `search/rich_scoped` | 1,000 files | ~92.9 us |
+| `search/symbol_defs` | 1,000 files | ~91.5 ns |
+| `search/callers` | 1,000 files | ~97.9 us |
+| `incremental_edit/single_file_reindex` | 500 files | ~1.1 ms |
+| `snapshot/write` | 500 files | ~6.4 ms |
+| `snapshot/load_into_engine` | 500 files | ~7.6 ms |
 
 Treat these numbers as a local regression baseline. Hardware, filesystem, and full
 Criterion settings will shift absolute timings.

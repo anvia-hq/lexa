@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lexa::engine::{self, SearchOptions};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
-use lexa::{edit, mcp, pipeline, snapshot, store};
+use lexa::{audit, edit, mcp, pipeline, snapshot, store};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -191,6 +191,26 @@ enum Commands {
 
     Status,
 
+    Audit {
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        since: Option<String>,
+
+        #[arg(long)]
+        strict: bool,
+
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        #[arg(long)]
+        no_config: bool,
+
+        #[arg(long, value_enum)]
+        include: Vec<AuditInclude>,
+    },
+
     #[command(
         alias = "update",
         about = "Upgrade the Lexa binary, not the project index"
@@ -323,6 +343,22 @@ fn main() -> Result<()> {
         ),
         Commands::Glob { ref pattern } => cmd_glob(pattern, &cli),
         Commands::Status => cmd_status(&cli),
+        Commands::Audit {
+            max,
+            ref since,
+            strict,
+            ref config,
+            no_config,
+            ref include,
+        } => cmd_audit(
+            max,
+            since.as_deref(),
+            strict,
+            config.as_ref(),
+            no_config,
+            include,
+            &cli,
+        ),
         Commands::Upgrade {
             ref version,
             ref install_dir,
@@ -1202,6 +1238,61 @@ fn cmd_status(cli: &Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn cmd_audit(
+    max: Option<usize>,
+    since: Option<&str>,
+    strict: bool,
+    config_path: Option<&PathBuf>,
+    no_config: bool,
+    include: &[AuditInclude],
+    cli: &Cli,
+) -> Result<()> {
+    let engine = load_engine(cli);
+    let root = std::env::current_dir()?;
+    let config = audit::load_audit_config(&root, config_path.map(PathBuf::as_path), no_config)?;
+    let scope = if let Some(base) = since {
+        audit::AuditScope::GitSince {
+            base: base.to_string(),
+            changed_files: audit::changed_files_since(&root, base)?,
+        }
+    } else {
+        audit::AuditScope::Project
+    };
+    let report = audit::run_audit(
+        &engine,
+        audit::AuditOptions {
+            max_results: max,
+            scope,
+            config,
+            includes: audit_includes(include),
+        },
+    );
+
+    if cli.json {
+        print_json(json!(report))?;
+    } else {
+        print!("{}", audit::render_audit_report(&report));
+    }
+
+    if strict && report.summary.high > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum AuditInclude {
+    #[value(name = "dead-code")]
+    DeadCode,
+}
+
+fn audit_includes(values: &[AuditInclude]) -> audit::AuditIncludes {
+    audit::AuditIncludes {
+        dead_code: values.contains(&AuditInclude::DeadCode),
+    }
 }
 
 fn cmd_upgrade(version: &str, install_dir: Option<&PathBuf>, cli: &Cli) -> Result<()> {

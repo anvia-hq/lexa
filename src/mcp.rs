@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
 use crate::engine::{Engine, SearchOptions};
 use crate::project_path::{normalize_project_path, project_target_path, PathMode};
@@ -153,6 +154,7 @@ impl McpServer {
             "changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
             "recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
             "status" => Ok(self.tool_status()),
+            "audit" => self.tool_audit(args),
             "pipeline" => self.tool_pipeline(args),
             _ => bail!("unknown tool: {name}"),
         }
@@ -756,6 +758,36 @@ impl McpServer {
         )
     }
 
+    fn tool_audit(&self, args: &Value) -> Result<ToolOutput> {
+        let max_results = opt_usize(args, "max_results").or_else(|| opt_usize(args, "max"));
+        let config_path = opt_str(args, "config").map(PathBuf::from);
+        let config = audit::load_audit_config(
+            &self.root,
+            config_path.as_deref(),
+            opt_bool(args, "no_config").unwrap_or(false),
+        )?;
+        let includes = audit_includes(args)?;
+        let scope = if let Some(base) = opt_str(args, "since") {
+            audit::AuditScope::GitSince {
+                base: base.to_string(),
+                changed_files: audit::changed_files_since(&self.root, base)?,
+            }
+        } else {
+            audit::AuditScope::Project
+        };
+        let report = audit::run_audit(
+            &self.engine,
+            AuditOptions {
+                max_results,
+                scope,
+                config,
+                includes,
+            },
+        );
+        let text = audit::render_audit_report(&report);
+        Ok(ToolOutput::new(text, json!(report)))
+    }
+
     fn tool_pipeline(&self, args: &Value) -> Result<ToolOutput> {
         let pipeline =
             if let Some(text) = opt_str(args, "query").or_else(|| opt_str(args, "pipeline")) {
@@ -988,6 +1020,11 @@ fn tools() -> Value {
             json!({"type":"object","properties":{},"required":[]})
         ),
         tool(
+            "audit",
+            "Run a review-oriented architecture audit over the indexed project.",
+            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string"},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]})
+        ),
+        tool(
             "pipeline",
             "Run a composable pipeline string such as 'glob src/**/*.rs | search main | limit 5'.",
             json!({"type":"object","properties":{"pipeline":{"type":"string"},"query":{"type":"string"},"steps":{"type":"array","items":{"type":"string"}}},"required":[]})
@@ -1035,6 +1072,23 @@ fn opt_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key)
         .and_then(Value::as_u64)
         .and_then(|n| usize::try_from(n).ok())
+}
+
+fn audit_includes(args: &Value) -> Result<audit::AuditIncludes> {
+    let mut includes = audit::AuditIncludes::default();
+    let Some(values) = args.get("include").and_then(Value::as_array) else {
+        return Ok(includes);
+    };
+
+    for value in values {
+        match value.as_str() {
+            Some("dead-code") => includes.dead_code = true,
+            Some(other) => bail!("unknown audit include: {other}"),
+            None => bail!("audit include values must be strings"),
+        }
+    }
+
+    Ok(includes)
 }
 
 fn parse_edit_op(op: &str) -> Result<EditOp> {
@@ -1206,6 +1260,7 @@ mod tests {
         assert!(names.contains(&"text_search"));
         assert!(names.contains(&"callers"));
         assert!(names.contains(&"create"));
+        assert!(names.contains(&"audit"));
         assert!(names.iter().all(|name| !name.starts_with("lexa_")));
         assert!(!names.contains(&"lexa_map"));
         assert!(!names.contains(&"lexa_find_path"));

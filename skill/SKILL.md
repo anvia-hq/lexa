@@ -62,6 +62,7 @@ lexa outline <path>
 lexa text-search "<query>" --scope
 lexa symbol-defs <name>
 lexa trace-deps <path>
+lexa audit
 ```
 
 Prefer Lexa over repeated filesystem scans when the question is about indexed files, symbols, imports, or recurring text search. Use `rg` directly when the user needs raw repository text search, unindexed generated files, or exact grep-style behavior.
@@ -90,6 +91,7 @@ All CLI commands:
 | `create <path>` | Create a file safely |
 | `glob <pattern>` | Match indexed paths with a glob |
 | `status` | Show index status |
+| `audit` | Run a review-oriented architecture audit |
 | `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Watch files and refresh the graph |
 | `pipeline <pipeline>` | Run composable query stages |
@@ -216,7 +218,63 @@ MCP tools exposed by Lexa:
 | `changes` | Changed files since sequence |
 | `recent` | Recently modified files |
 | `status` | Index status |
+| `audit` | Review-oriented architecture audit |
 | `pipeline` | Composable query pipeline |
+
+## Audit Workflow
+
+Use `lexa audit` when the user wants a static analysis pass, architecture review,
+or agent-friendly risk summary. The audit is read-only and reports import cycles,
+large files, large symbols, and dependency hotspots from the indexed graph.
+
+```bash
+lexa audit
+lexa --json audit
+lexa audit --max 50
+lexa audit --since main
+lexa audit --since main --strict
+lexa audit --config lexa.toml
+lexa audit --no-config
+lexa audit --include dead-code
+```
+
+Use `--since <git-ref>` for review scope and `--strict` when the user wants a
+CI-style non-zero exit on high-severity findings.
+Use `--include dead-code` only when the user explicitly wants unused-code
+candidates; treat those findings as candidates, not removal instructions.
+Audit findings include `actionability` and `next_steps`. Treat `actionable` as a
+likely refactor target, `candidate` as verify-before-change, `expected` as normal
+shared infrastructure or composition-root coupling, and `risk_note` as edit with
+care but do not assume refactoring is needed.
+Human-readable audit output is grouped by actionability. Treat `secondary`
+findings as supporting context for a stronger finding on the same file, not a
+separate recommendation.
+For JSON/MCP output, summarize from `groups.actionable`, `groups.candidates`,
+`groups.risk_notes`, `groups.expected`, and `groups.secondary` before consulting
+the flat `findings` array.
+Dead-code candidates are source-symbol focused by default. Lexa suppresses
+style/config/data/tooling/test/generated/declaration files so CSS variables,
+JSON keys, package scripts, and framework mount selectors do not dominate the
+audit.
+
+Audit config is optional. Lexa discovers `lexa.toml` or `.lexa/audit.toml`
+unless `--config` or `--no-config` is used. Dotted rule IDs must be quoted in
+TOML. Cross-language generated artifacts, build outputs, lockfiles, and
+dependency folders are ignored by default; set `audit.ignore.generated = false`
+only when the user explicitly wants generated output included. For example:
+
+```toml
+[audit.rules]
+"file.large" = "off"
+"dead_code.candidate" = "warning"
+
+[audit.ignore]
+generated = true
+
+[audit.dead_code]
+ignore_symbols = ["main", "handler", "setup"]
+entrypoint_globs = ["src/main.*", "src/bin/**"]
+```
 
 ## Verification
 
