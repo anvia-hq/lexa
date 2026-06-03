@@ -5,6 +5,8 @@
 [![MCP](https://img.shields.io/badge/MCP-ready-4b5563.svg)](#mcp)
 [![Status](https://img.shields.io/badge/status-ready%20to%20use-brightgreen.svg)](#development)
 
+![Lexa open source banner](docs/assets/lexa-open-source.png)
+
 Fast local code intelligence for humans and AI agents.
 
 Lexa turns a codebase into a portable, queryable graph so every tool can work
