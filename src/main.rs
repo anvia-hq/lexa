@@ -1,21 +1,8 @@
-mod cache;
-mod edit;
-mod engine;
-mod glob;
-mod index;
-mod mcp;
-mod parser;
-mod pipeline;
-mod project_path;
-mod snapshot;
-mod store;
-mod types;
-mod walker;
-
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use engine::SearchOptions;
-use project_path::{normalize_project_path, project_target_path, PathMode};
+use lexa::engine::{self, SearchOptions};
+use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
+use lexa::{edit, mcp, pipeline, snapshot, store};
 use serde_json::json;
 use std::path::PathBuf;
 

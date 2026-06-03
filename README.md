@@ -149,4 +149,35 @@ cargo test
 cargo build --release
 ```
 
+Run performance benchmarks:
+
+```bash
+cargo bench --bench engine
+```
+
+For a faster local smoke benchmark:
+
+```bash
+cargo bench --bench engine -- --warm-up-time 1 --measurement-time 2 --sample-size 10
+```
+
+Smoke benchmark baseline from June 3, 2026 on a generated Rust fixture corpus:
+
+| Benchmark | Corpus | Time |
+| --- | ---: | ---: |
+| `project_index/100` | 100 files | ~20 ms |
+| `project_index/500` | 500 files | ~393 ms |
+| `search/exact_word` | 1,000 files | ~60 us |
+| `search/unique_token` | 1,000 files | ~187 us |
+| `search/regex` | 1,000 files | ~57 us |
+| `search/rich_scoped` | 1,000 files | ~96 us |
+| `search/symbol_defs` | 1,000 files | ~95 ns |
+| `search/callers` | 1,000 files | ~106 us |
+| `incremental_edit/single_file_reindex` | 500 files | ~350 ms |
+| `snapshot/write` | 500 files | ~7.2 ms |
+| `snapshot/load_into_engine` | 500 files | ~8.2 ms |
+
+Treat these numbers as a local regression baseline. Hardware, filesystem, and full
+Criterion settings will shift absolute timings.
+
 Lexa is ready to use. Graph format and output details may still evolve as the project grows.

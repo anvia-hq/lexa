@@ -33,6 +33,14 @@ tree-sitter-java = "0.23"
 tree-sitter-ruby = "0.23"
 tree-sitter-php = "0.23"
 
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3"
+
+[[bench]]
+name = "engine"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true
