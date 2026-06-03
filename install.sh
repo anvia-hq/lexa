@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+repo="${LEXA_REPO:-anvia-hq/lexa}"
+version="${1:-${LEXA_VERSION:-latest}}"
+install_dir="${LEXA_INSTALL_DIR:-$HOME/.local/bin}"
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'error: required command not found: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+need_cmd curl
+need_cmd tar
+need_cmd uname
+need_cmd sed
+need_cmd mktemp
+
+os="$(uname -s)"
+arch="$(uname -m)"
+
+case "$os:$arch" in
+  Darwin:arm64 | Darwin:aarch64)
+    platform="macos-apple-silicon"
+    ;;
+  Darwin:x86_64 | Darwin:amd64)
+    platform="macos-intel"
+    ;;
+  Linux:x86_64 | Linux:amd64)
+    platform="linux-x86_64"
+    ;;
+  *)
+    printf 'error: unsupported platform: %s %s\n' "$os" "$arch" >&2
+    printf 'supported platforms: macOS Apple Silicon, macOS Intel, Linux x86_64\n' >&2
+    exit 1
+    ;;
+esac
+
+if [ "$version" = "latest" ]; then
+  tag="$(
+    curl -fsSL "https://api.github.com/repos/$repo/releases/latest" |
+      sed -n 's/^[[:space:]]*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
+      sed -n '1p'
+  )"
+  if [ -z "$tag" ]; then
+    printf 'error: could not determine latest release for %s\n' "$repo" >&2
+    exit 1
+  fi
+else
+  case "$version" in
+    v*) tag="$version" ;;
+    *) tag="v$version" ;;
+  esac
+fi
+
+asset_version="${tag#v}"
+archive="lexa-${platform}-${asset_version}.tar.gz"
+url="https://github.com/$repo/releases/download/$tag/$archive"
+tmp_dir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT INT TERM
+
+printf 'Downloading %s...\n' "$url"
+curl -fL --retry 3 --retry-delay 2 -o "$tmp_dir/$archive" "$url"
+
+tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
+binary="$tmp_dir/lexa-${platform}-${asset_version}/lexa"
+
+if [ ! -f "$binary" ]; then
+  printf 'error: archive did not contain expected binary: lexa\n' >&2
+  exit 1
+fi
+
+mkdir -p "$install_dir"
+cp "$binary" "$install_dir/lexa"
+chmod 755 "$install_dir/lexa"
+
+printf 'Installed lexa %s to %s/lexa\n' "$tag" "$install_dir"
+
+case ":$PATH:" in
+  *":$install_dir:"*) ;;
+  *)
+    printf 'Add this directory to PATH to run lexa from anywhere:\n'
+    printf '  export PATH="%s:$PATH"\n' "$install_dir"
+    ;;
+esac
+
+"$install_dir/lexa" --help >/dev/null
+printf 'lexa is ready.\n'

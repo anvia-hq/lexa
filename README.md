@@ -45,6 +45,26 @@ workflow, and an AI agent.
 
 ## Install
 
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex
+```
+
+Install a specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- v0.1.0
+```
+
+From source:
+
 ```bash
 cargo install --path .
 ```
@@ -171,6 +191,18 @@ cargo fmt -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 cargo build --release
+```
+
+## Binary Releases
+
+GitHub Actions builds release artifacts for macOS Apple Silicon, macOS Intel,
+Linux x86_64, and Windows x86_64.
+
+To publish a GitHub Release with all binaries:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
 Run the benchmark suite:
