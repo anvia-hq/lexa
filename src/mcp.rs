@@ -21,6 +21,7 @@ pub struct McpServer {
     root: PathBuf,
     graph_path: PathBuf,
     persist_graph: bool,
+    include_structured_content: bool,
     watcher: Option<RuntimeWatcher>,
 }
 
@@ -52,12 +53,19 @@ impl ToolOutput {
 }
 
 impl McpServer {
-    pub fn new(engine: Engine, root: PathBuf, graph_path: PathBuf, persist_graph: bool) -> Self {
+    pub fn new(
+        engine: Engine,
+        root: PathBuf,
+        graph_path: PathBuf,
+        persist_graph: bool,
+        include_structured_content: bool,
+    ) -> Self {
         Self {
             engine,
             root,
             graph_path,
             persist_graph,
+            include_structured_content,
             watcher: None,
         }
     }
@@ -191,7 +199,7 @@ impl McpServer {
                 };
                 let args = params.get("arguments").unwrap_or(&Value::Null);
                 let result = self.call_tool(name, args);
-                Some(tool_response(id, result))
+                Some(tool_response(id, result, self.include_structured_content))
             }
             "ping" => id.map(|id| json!({ "jsonrpc": "2.0", "id": id, "result": {} })),
             _ => id.map(|id| json_rpc_error(Some(id), -32601, "method not found")),
@@ -1011,14 +1019,14 @@ fn write_response(writer: &mut impl Write, framing: StdioFraming, response: &Val
     Ok(())
 }
 
-fn tool_response(id: Value, result: Result<ToolOutput>) -> Value {
+fn tool_response(id: Value, result: Result<ToolOutput>, include_structured_content: bool) -> Value {
     match result {
         Ok(output) => {
             let mut result = json!({
                 "content": [{ "type": "text", "text": output.text }],
                 "isError": false
             });
-            if !output.structured.is_null() {
+            if include_structured_content && !output.structured.is_null() {
                 result["structuredContent"] = output.structured;
             }
             json!({
@@ -1027,15 +1035,20 @@ fn tool_response(id: Value, result: Result<ToolOutput>) -> Value {
                 "result": result
             })
         }
-        Err(err) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "content": [{ "type": "text", "text": format!("error: {err}") }],
-                "structuredContent": { "error": err.to_string() },
-                "isError": true
+        Err(err) => {
+            let mut response = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{ "type": "text", "text": format!("error: {err}") }],
+                    "isError": true
+                }
+            });
+            if include_structured_content {
+                response["result"]["structuredContent"] = json!({ "error": err.to_string() });
             }
-        }),
+            response
+        }
     }
 }
 
@@ -1356,6 +1369,46 @@ mod tests {
         expected.extend_from_slice(&body);
 
         assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn tool_response_omits_structured_content_by_default() {
+        let response = tool_response(
+            json!(1),
+            Ok(ToolOutput::new(
+                "plain text".to_string(),
+                json!({"count": 1}),
+            )),
+            false,
+        );
+
+        assert_eq!(
+            response["result"]["content"][0]["text"],
+            Value::String("plain text".to_string())
+        );
+        assert!(response["result"].get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn tool_response_includes_structured_content_when_enabled() {
+        let response = tool_response(
+            json!(1),
+            Ok(ToolOutput::new(
+                "plain text".to_string(),
+                json!({"count": 1}),
+            )),
+            true,
+        );
+
+        assert_eq!(response["result"]["structuredContent"], json!({"count": 1}));
+    }
+
+    #[test]
+    fn tool_error_response_omits_structured_content_by_default() {
+        let response = tool_response(json!(1), Err(anyhow::anyhow!("bad input")), false);
+
+        assert_eq!(response["result"]["isError"], Value::Bool(true));
+        assert!(response["result"].get("structuredContent").is_none());
     }
 
     #[test]

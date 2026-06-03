@@ -245,6 +245,9 @@ enum Commands {
 
         #[arg(long, default_value = "500")]
         debounce: u64,
+
+        #[arg(long = "structured-content", alias = "json-output")]
+        structured_content: bool,
     },
 }
 
@@ -375,7 +378,8 @@ fn main() -> Result<()> {
             ref path,
             no_refresh,
             debounce,
-        } => cmd_mcp(path, no_refresh, debounce, &cli),
+            structured_content,
+        } => cmd_mcp(path, no_refresh, debounce, structured_content, &cli),
     }
 }
 
@@ -454,7 +458,13 @@ fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> 
     Ok(())
 }
 
-fn cmd_mcp(path: &PathBuf, no_refresh: bool, debounce_ms: u64, cli: &Cli) -> Result<()> {
+fn cmd_mcp(
+    path: &PathBuf,
+    no_refresh: bool,
+    debounce_ms: u64,
+    structured_content: bool,
+    cli: &Cli,
+) -> Result<()> {
     let root = std::fs::canonicalize(path)?;
     let snap_path = project_graph_path(&root, cli);
     let mut engine = engine::Engine::new(16384);
@@ -488,7 +498,14 @@ fn cmd_mcp(path: &PathBuf, no_refresh: bool, debounce_ms: u64, cli: &Cli) -> Res
         }
     }
 
-    let mut server = mcp::McpServer::new(engine, root, snap_path, !cli.no_graph);
+    let include_structured_content = structured_content || cli.json;
+    let mut server = mcp::McpServer::new(
+        engine,
+        root,
+        snap_path,
+        !cli.no_graph,
+        include_structured_content,
+    );
     if !no_refresh {
         server.enable_watcher(debounce_ms)?;
     }
@@ -1676,10 +1693,12 @@ mod tests {
             Commands::Mcp {
                 no_refresh,
                 debounce,
+                structured_content,
                 ..
             } => {
                 assert!(!no_refresh);
                 assert_eq!(debounce, 500);
+                assert!(!structured_content);
             }
             _ => panic!("expected mcp command"),
         }
@@ -1694,11 +1713,40 @@ mod tests {
             Commands::Mcp {
                 no_refresh,
                 debounce,
+                structured_content,
                 ..
             } => {
                 assert!(no_refresh);
                 assert_eq!(debounce, 250);
+                assert!(!structured_content);
             }
+            _ => panic!("expected mcp command"),
+        }
+    }
+
+    #[test]
+    fn mcp_accepts_structured_content_flag_and_json_output_alias() {
+        for flag in ["--structured-content", "--json-output"] {
+            let cli = Cli::try_parse_from(["lexa", "mcp", ".", flag]).unwrap();
+
+            match cli.command {
+                Commands::Mcp {
+                    structured_content, ..
+                } => assert!(structured_content),
+                _ => panic!("expected mcp command"),
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_accepts_global_json_flag_as_structured_content_opt_in() {
+        let cli = Cli::try_parse_from(["lexa", "mcp", ".", "--json"]).unwrap();
+
+        assert!(cli.json);
+        match cli.command {
+            Commands::Mcp {
+                structured_content, ..
+            } => assert!(!structured_content),
             _ => panic!("expected mcp command"),
         }
     }

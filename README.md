@@ -144,7 +144,7 @@ lexa --graph /tmp/project.graph.lexa text-search "Parser"
 | `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Refresh graph on file changes |
 | `pipeline <pipeline>` | Chain query operations |
-| `mcp [path]` | Start MCP over stdio |
+| `mcp [path]` | Start MCP over stdio; returns text-only tool content by default |
 
 Useful search flags:
 
@@ -154,6 +154,8 @@ lexa text-search --regex "render[A-Z]\\w+"
 lexa text-search "useEffect" --path-glob "**/*.{ts,tsx}"
 lexa text-search "TODO" --compact --paths-only
 ```
+
+MCP omits duplicated `structuredContent` by default to reduce token use. Start with `lexa mcp . --structured-content` or `lexa mcp . --json` when a client needs JSON structured tool results.
 
 Safe edit example:
 
