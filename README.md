@@ -7,7 +7,13 @@
 
 Fast local code intelligence for humans and AI agents.
 
-Lexa indexes a project into a portable graph, then answers codebase questions through a CLI or MCP server. Use it for symbol lookup, text search, file outlines, dependency tracing, hash-aware reads, and atomic line-based patches without running an HTTP daemon.
+Lexa turns a codebase into a portable, queryable graph so every tool can work
+from the same stable view of the project.
+
+Instead of repeatedly scanning files ad hoc, Lexa indexes structure, text,
+symbols, imports, content hashes, and recent edits into one local graph. That
+method gives agents compact context, traceable lookups, hash-aware reads, and
+atomic line-based patches.
 
 ```bash
 lexa index .
@@ -18,10 +24,22 @@ lexa mcp .
 
 | Project | Info |
 | --- | --- |
-| Type | Local code intelligence CLI and MCP server |
-| Graph | `.lexa/graph.lexa` by default |
-| Runtime | Native Rust binary, no HTTP daemon |
+| Interface | CLI and MCP server |
+| Index | `.lexa/graph.lexa` by default |
+| Runtime | Native Rust binary |
 | License | MIT |
+
+## Why Lexa
+
+Lexa is built around an index-first workflow:
+
+1. Build one local graph for the project.
+2. Query that graph for paths, symbols, text, outlines, imports, and context.
+3. Read and patch files with content hashes so edits can be checked against the
+   version that was inspected.
+
+That makes Lexa useful as a shared context layer between a developer, a terminal
+workflow, and an AI agent.
 
 ## Install
 
@@ -55,7 +73,8 @@ lexa symbol-defs Engine
 lexa read src/main.rs -L 1-80
 ```
 
-By default, Lexa writes its graph to `.lexa/graph.lexa`.
+`index` writes the graph to `.lexa/graph.lexa` by default. Commands run from the
+project root will read that graph automatically.
 
 Use a custom graph path:
 
@@ -109,13 +128,13 @@ lexa create src/new_file.rs --content 'pub fn new_file() {}'
 
 ## MCP
 
-Start an MCP server for a project:
+Expose the same graph-backed tools to an MCP client:
 
 ```bash
 lexa mcp /path/to/project
 ```
 
-Start without reading or writing a graph:
+Run MCP without loading or saving a graph:
 
 ```bash
 lexa --no-graph mcp /path/to/project
@@ -136,9 +155,12 @@ Example config:
 
 ## Language Support
 
-Tree-sitter parsers: Zig, Python, Rust, TypeScript, JavaScript, Go, C, C++, Java, Ruby, PHP.
+Tree-sitter parsers: Zig, Python, Rust, TypeScript, JavaScript, Go, C, C++,
+Java, Ruby, PHP.
 
-Lightweight parsers: HCL, R, Markdown, JSON, TOML, YAML, Dart, Kotlin, Swift, Svelte, Vue, Astro, shell, CSS, SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, TableGen.
+Lightweight parsers: HCL, R, Markdown, JSON, TOML, YAML, Dart, Kotlin, Swift,
+Svelte, Vue, Astro, shell, CSS, SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR,
+TableGen.
 
 ## Development
 
@@ -149,7 +171,7 @@ cargo test
 cargo build --release
 ```
 
-Run performance benchmarks:
+Run the benchmark suite:
 
 ```bash
 cargo bench --bench engine
