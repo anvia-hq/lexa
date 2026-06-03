@@ -20,6 +20,7 @@ pub(crate) fn collect_findings(
     let mut findings = Vec::new();
 
     architecture::audit_cycles(engine, config, &mut findings);
+    dependencies::audit_unresolved_imports(engine, config, &mut findings);
     size::audit_large_files(engine, config, &mut findings);
     size::audit_large_symbols(engine, config, &mut findings);
     dependencies::audit_dependency_hotspots(engine, config, &mut findings);

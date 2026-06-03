@@ -558,6 +558,7 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
 
     match engine.get_outline(&path) {
         Some(outline) => {
+            let unresolved_imports = engine.get_unresolved_imports(&path);
             if cli.json {
                 return print_json(json!({
                     "path": path,
@@ -566,6 +567,7 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
                     "byte_size": outline.byte_size,
                     "symbol_count": outline.symbols.len(),
                     "imports": &outline.imports,
+                    "unresolved_imports": unresolved_imports,
                     "symbols": &outline.symbols,
                 }));
             }
@@ -582,6 +584,18 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
                 println!("Imports:");
                 for import in &outline.imports {
                     println!("  {}", import);
+                }
+                println!();
+            }
+
+            if !unresolved_imports.is_empty() {
+                println!("Unresolved local imports:");
+                for import in &unresolved_imports {
+                    let line = import
+                        .line_start
+                        .map(|line| format!("L{line}: "))
+                        .unwrap_or_default();
+                    println!("  {}{}", line, import.import);
                 }
                 println!();
             }
@@ -790,6 +804,11 @@ fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()
     } else {
         engine.get_depends_on(&path)
     };
+    let unresolved_imports = if reverse {
+        Vec::new()
+    } else {
+        engine.get_unresolved_imports(&path)
+    };
 
     let label = if reverse { "imported by" } else { "depends on" };
     let transitive_label = if transitive { " (transitive)" } else { "" };
@@ -801,6 +820,7 @@ fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()
             "transitive": transitive,
             "count": deps.len(),
             "dependencies": deps,
+            "unresolved_imports": unresolved_imports,
         }));
     }
 
@@ -810,6 +830,16 @@ fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()
         println!("{} {}{}: ", deps.len(), label, transitive_label);
         for dep in &deps {
             println!("  {}", dep);
+        }
+    }
+    if !unresolved_imports.is_empty() {
+        println!("Unresolved local import(s):");
+        for import in &unresolved_imports {
+            let line = import
+                .line_start
+                .map(|line| format!("L{line}: "))
+                .unwrap_or_default();
+            println!("  {}{}", line, import.import);
         }
     }
 

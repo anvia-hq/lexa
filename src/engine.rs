@@ -65,9 +65,15 @@ struct ScoredSearchResult {
     result: SearchResult,
 }
 
+struct ImportResolution {
+    deps: Vec<String>,
+    unresolved: Vec<String>,
+}
+
 pub struct DepGraph {
     forward: HashMap<String, Vec<String>>,
     reverse: HashMap<String, HashSet<String>>,
+    unresolved: HashMap<String, Vec<UnresolvedImport>>,
 }
 
 impl DepGraph {
@@ -75,10 +81,20 @@ impl DepGraph {
         Self {
             forward: HashMap::new(),
             reverse: HashMap::new(),
+            unresolved: HashMap::new(),
         }
     }
 
     pub fn set_deps(&mut self, path: &str, deps: Vec<String>) {
+        self.set_resolution(path, deps, Vec::new());
+    }
+
+    pub fn set_resolution(
+        &mut self,
+        path: &str,
+        deps: Vec<String>,
+        unresolved: Vec<UnresolvedImport>,
+    ) {
         if let Some(old_deps) = self.forward.get(path) {
             for dep in old_deps {
                 if let Some(set) = self.reverse.get_mut(dep) {
@@ -94,11 +110,17 @@ impl DepGraph {
                 .insert(path.to_string());
         }
         self.forward.insert(path.to_string(), deps);
+        if unresolved.is_empty() {
+            self.unresolved.remove(path);
+        } else {
+            self.unresolved.insert(path.to_string(), unresolved);
+        }
     }
 
     pub fn clear(&mut self) {
         self.forward.clear();
         self.reverse.clear();
+        self.unresolved.clear();
     }
 
     pub fn remove(&mut self, path: &str) {
@@ -110,6 +132,7 @@ impl DepGraph {
             }
         }
         self.reverse.remove(path);
+        self.unresolved.remove(path);
     }
 
     pub fn get_imported_by(&self, path: &str) -> Vec<String> {
@@ -121,6 +144,17 @@ impl DepGraph {
 
     pub fn get_depends_on(&self, path: &str) -> Vec<String> {
         self.forward.get(path).cloned().unwrap_or_default()
+    }
+
+    pub fn get_unresolved_imports(&self, path: &str) -> Vec<UnresolvedImport> {
+        self.unresolved.get(path).cloned().unwrap_or_default()
+    }
+
+    pub fn unresolved_imports(&self) -> Vec<UnresolvedImport> {
+        self.unresolved
+            .values()
+            .flat_map(|imports| imports.iter().cloned())
+            .collect()
     }
 
     pub fn get_transitive(&self, path: &str, reverse: bool) -> Vec<String> {
@@ -583,6 +617,21 @@ impl Engine {
         self.dep_graph.get_depends_on(path)
     }
 
+    pub fn get_unresolved_imports(&self, path: &str) -> Vec<UnresolvedImport> {
+        self.dep_graph.get_unresolved_imports(path)
+    }
+
+    pub fn unresolved_imports(&self) -> Vec<UnresolvedImport> {
+        let mut imports = self.dep_graph.unresolved_imports();
+        imports.sort_by(|a, b| {
+            a.path
+                .cmp(&b.path)
+                .then_with(|| a.line_start.cmp(&b.line_start))
+                .then_with(|| a.import.cmp(&b.import))
+        });
+        imports
+    }
+
     pub fn get_transitive_imported_by(&self, path: &str) -> Vec<String> {
         self.dep_graph.get_transitive(path, true)
     }
@@ -1042,28 +1091,53 @@ impl Engine {
             .or_else(|| self.contents.get(path).map(String::as_str))
     }
 
-    fn resolve_imports(&self, path: &str, imports: &[String], language: Language) -> Vec<String> {
+    fn resolve_imports(
+        &self,
+        path: &str,
+        imports: &[String],
+        language: Language,
+    ) -> ImportResolution {
         let mut deps = Vec::new();
+        let mut unresolved = Vec::new();
         for import in imports {
             if language == Language::Rust {
                 deps.extend(self.resolve_rust_import(path, import));
-            } else if let Some(candidate) = self.resolve_generic_import(path, import) {
-                deps.push(candidate);
+            } else {
+                let terms = import_terms(import);
+                if let Some(candidate) = self.resolve_generic_import_terms(path, &terms) {
+                    deps.push(candidate);
+                } else if is_local_generic_import(&terms) {
+                    unresolved.push(import.clone());
+                }
             }
         }
         deps.sort();
         deps.dedup();
-        deps
+        unresolved.sort();
+        unresolved.dedup();
+        ImportResolution { deps, unresolved }
     }
 
     fn resolve_generic_import(&self, importer_path: &str, import: &str) -> Option<String> {
         let terms = import_terms(import);
+        self.resolve_generic_import_terms(importer_path, &terms)
+    }
+
+    fn resolve_generic_import_terms(
+        &self,
+        importer_path: &str,
+        terms: &[String],
+    ) -> Option<String> {
         if terms.is_empty() {
             return None;
         }
 
-        if let Some(candidate) = self.exact_import_match(importer_path, &terms) {
+        if let Some(candidate) = self.exact_import_match(importer_path, terms) {
             return Some(candidate);
+        }
+
+        if is_local_generic_import(terms) {
+            return None;
         }
 
         let mut best_match: Option<(i32, &str)> = None;
@@ -1072,7 +1146,7 @@ impl Engine {
                 continue;
             }
 
-            for term in &terms {
+            for term in terms {
                 let Some(score) = import_match_score(term, candidate) else {
                     continue;
                 };
@@ -1155,16 +1229,22 @@ impl Engine {
     }
 
     fn rebuild_dep_graph(&mut self) {
-        let outlines: Vec<(String, Vec<String>, Language)> = self
+        let outlines: Vec<(String, FileOutline)> = self
             .outlines
             .iter()
-            .map(|(path, outline)| (path.clone(), outline.imports.clone(), outline.language))
+            .map(|(path, outline)| (path.clone(), outline.clone()))
             .collect();
 
         self.dep_graph.clear();
-        for (path, imports, language) in outlines {
-            let deps = self.resolve_imports(&path, &imports, language);
-            self.dep_graph.set_deps(&path, deps);
+        for (path, outline) in outlines {
+            let resolution = self.resolve_imports(&path, &outline.imports, outline.language);
+            let unresolved = resolution
+                .unresolved
+                .into_iter()
+                .map(|import| unresolved_import_record(&path, &outline, import))
+                .collect();
+            self.dep_graph
+                .set_resolution(&path, resolution.deps, unresolved);
         }
     }
 
@@ -1213,9 +1293,8 @@ impl Engine {
             self.contents.insert(path, content);
         }
 
-        for (path, deps) in raw.forward_deps {
-            self.dep_graph.set_deps(&path, deps);
-        }
+        let _ = raw.forward_deps;
+        self.rebuild_dep_graph();
     }
 
     pub fn index_project(&mut self, root: impl AsRef<Path>) -> usize {
@@ -1329,6 +1408,25 @@ fn import_terms(import: &str) -> Vec<String> {
     expanded.sort();
     expanded.dedup();
     expanded
+}
+
+fn is_local_generic_import(terms: &[String]) -> bool {
+    terms
+        .iter()
+        .any(|term| term.starts_with("./") || term.starts_with("../"))
+}
+
+fn unresolved_import_record(path: &str, outline: &FileOutline, import: String) -> UnresolvedImport {
+    let import_symbol = outline
+        .symbols
+        .iter()
+        .find(|symbol| symbol.kind == SymbolKind::Import && symbol.name == import);
+    UnresolvedImport {
+        path: path.to_string(),
+        import,
+        line_start: import_symbol.map(|symbol| symbol.line_start),
+        line_end: import_symbol.map(|symbol| symbol.line_end),
+    }
 }
 
 fn rust_import_module_path_groups(importer_path: &str, import: &str) -> Vec<(String, Vec<String>)> {
@@ -2067,6 +2165,35 @@ mod tests {
             engine.get_depends_on("src/feature/app.ts"),
             vec!["src/client.ts"]
         );
+    }
+
+    #[test]
+    fn dependency_graph_does_not_fuzzy_resolve_missing_relative_js_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/app.ts",
+            "import { selectedModel } from './model-settings/selected-model';\nimport { provider } from './model-settings/lib/providers';\n",
+        );
+        engine.index_file(
+            "src/model-settings/lib/selected-model.ts",
+            "export const selectedModel = 'moved';\n",
+        );
+        engine.index_file(
+            "src/model-settings/lib/providers.ts",
+            "export const provider = 'ok';\n",
+        );
+
+        assert_eq!(
+            engine.get_depends_on("src/app.ts"),
+            vec!["src/model-settings/lib/providers.ts"]
+        );
+        let unresolved = engine.get_unresolved_imports("src/app.ts");
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(
+            unresolved[0].import,
+            "import { selectedModel } from './model-settings/selected-model';"
+        );
+        assert_eq!(unresolved[0].line_start, Some(1));
     }
 
     #[test]
