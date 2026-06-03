@@ -1,0 +1,37 @@
+---
+title: Commands
+description: CLI command reference for Lexa.
+---
+
+| Command | Purpose |
+| --- | --- |
+| `index <path>` | Index a project and write a graph |
+| `files [path]` | Show indexed files |
+| `list [path]` | List directory children |
+| `glob <pattern>` | Match indexed paths |
+| `path-search <pattern>` | Fuzzy path search |
+| `text-search <query>` | Search indexed text |
+| `outline <path>` | Show imports and symbols |
+| `symbol-defs <name>` | Find exact symbol definitions |
+| `word-refs <word>` | Find exact word or identifier references |
+| `callers <name>` | Find non-definition call sites |
+| `trace-deps <path>` | Trace parsed imports |
+| `brief <task>` | Build task-focused context |
+| `read <path>` | Read a file or line range |
+| `patch <path> <op>` | Apply a line-based edit |
+| `create <path>` | Create a file safely |
+| `changes [since]` | Show session-local changes |
+| `recent` | Show recently modified files |
+| `status` | Show index status |
+| `watch [path]` | Refresh graph on file changes |
+| `pipeline <pipeline>` | Chain query operations |
+| `mcp [path]` | Start MCP over stdio |
+
+## Useful Search Flags
+
+```bash
+lexa text-search "render" --scope
+lexa text-search --regex "render[A-Z]\\w+"
+lexa text-search "useEffect" --path-glob "**/*.{ts,tsx}"
+lexa text-search "TODO" --compact --paths-only
+```

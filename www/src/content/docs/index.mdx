@@ -1,0 +1,58 @@
+---
+title: Lexa
+description: Fast local code intelligence for humans and AI agents.
+template: splash
+---
+
+<section class="home-hero">
+  <div class="home-hero-copy">
+    <p class="home-kicker">Native Rust index for agent workflows</p>
+    <h1>Lexa</h1>
+    <div class="home-lede">
+      Fast local code intelligence for humans and AI agents. Build one project
+      graph, then query files, symbols, imports, and edits from a stable view.
+    </div>
+    <div class="home-actions">
+      <a href="/guides/quick-start/">Quick Start</a>
+      <a href="/reference/commands/">Commands</a>
+    </div>
+  </div>
+
+  <div class="home-terminal" aria-label="Lexa command example">
+    <div></div>
+    <pre><code>lexa index .
+lexa text-search "handle_request" --scope
+lexa outline src/main.rs
+lexa mcp .</code></pre>
+  </div>
+</section>
+
+<section class="home-section">
+  <h2>What Lexa gives you</h2>
+
+  <div class="home-rows">
+    <article>
+      <h3>Index once</h3>
+      <p>Build one local graph for files, symbols, imports, text, and edits.</p>
+    </article>
+    <article>
+      <h3>Query precisely</h3>
+      <p>Search paths, symbols, outlines, dependencies, and scoped text fast.</p>
+    </article>
+    <article>
+      <h3>Patch safely</h3>
+      <p>Use content hashes and line-based edits to avoid stale changes.</p>
+    </article>
+  </div>
+</section>
+
+<section class="home-section home-snapshot">
+  <h2>Project snapshot</h2>
+
+  | Area | Detail |
+  | --- | --- |
+  | Interface | CLI and MCP server |
+  | Index | `.lexa/graph.lexa` by default |
+  | Runtime | Native Rust binary |
+  | License | MIT |
+</section>
