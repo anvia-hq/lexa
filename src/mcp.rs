@@ -882,21 +882,23 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
     };
 
     let first_trimmed = trim_line_end(&first_line);
-    if first_trimmed.trim_start().starts_with(['{', '[']) {
+    if trim_ascii_start(first_trimmed).starts_with(b"{")
+        || trim_ascii_start(first_trimmed).starts_with(b"[")
+    {
         return Ok(Some(McpMessage {
-            body: first_line.into_bytes(),
+            body: first_line,
             framing: StdioFraming::NewlineDelimited,
         }));
     }
 
     let mut content_length = parse_content_length_header(first_trimmed)?;
     loop {
-        let mut line = String::new();
-        let read = reader.read_line(&mut line)?;
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
         if read == 0 {
             return Ok(None);
         }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
+        let trimmed = trim_line_end(&line);
         if trimmed.is_empty() {
             break;
         }
@@ -914,10 +916,10 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
     }))
 }
 
-fn read_non_empty_line(reader: &mut impl BufRead) -> Result<Option<String>> {
+fn read_non_empty_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
     loop {
-        let mut line = String::new();
-        let read = reader.read_line(&mut line)?;
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
         if read == 0 {
             return Ok(None);
         }
@@ -927,16 +929,43 @@ fn read_non_empty_line(reader: &mut impl BufRead) -> Result<Option<String>> {
     }
 }
 
-fn trim_line_end(line: &str) -> &str {
-    line.trim_end_matches(['\r', '\n'])
+fn trim_line_end(line: &[u8]) -> &[u8] {
+    line.strip_suffix(b"\r\n")
+        .or_else(|| line.strip_suffix(b"\n"))
+        .or_else(|| line.strip_suffix(b"\r"))
+        .unwrap_or(line)
 }
 
-fn parse_content_length_header(line: &str) -> Result<Option<usize>> {
-    let Some((name, value)) = line.split_once(':') else {
+fn trim_ascii_start(line: &[u8]) -> &[u8] {
+    let start = line
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    &line[start..]
+}
+
+fn trim_ascii(line: &[u8]) -> &[u8] {
+    let start = line
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    let end = line
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map(|idx| idx + 1)
+        .unwrap_or(start);
+    &line[start..end]
+}
+
+fn parse_content_length_header(line: &[u8]) -> Result<Option<usize>> {
+    let Some(colon_idx) = line.iter().position(|byte| *byte == b':') else {
         return Ok(None);
     };
-    if name.eq_ignore_ascii_case("content-length") {
-        return Ok(Some(value.trim().parse::<usize>()?));
+    let (name, value) = line.split_at(colon_idx);
+    if name.eq_ignore_ascii_case(b"content-length") {
+        let value = trim_ascii(&value[1..]);
+        let value = std::str::from_utf8(value).context("invalid Content-Length header")?;
+        return Ok(Some(value.parse::<usize>()?));
     }
     Ok(None)
 }
@@ -1275,6 +1304,13 @@ mod tests {
 
         assert_eq!(message.framing, StdioFraming::ContentLength);
         assert_eq!(message.body, body);
+    }
+
+    #[test]
+    fn read_message_handles_non_utf8_input_without_io_utf8_error() {
+        let mut reader = Cursor::new(vec![0xff, b'\n']);
+
+        assert!(read_message(&mut reader).unwrap().is_none());
     }
 
     #[test]
