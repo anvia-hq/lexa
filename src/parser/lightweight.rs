@@ -382,21 +382,20 @@ fn parse_cargo_toml_key(
             }
         }
         section
-            if section.starts_with("bin")
+            if (section.starts_with("bin")
                 || section.starts_with("example")
                 || section.starts_with("test")
-                || section.starts_with("bench") =>
+                || section.starts_with("bench"))
+                && key == "name" =>
         {
-            if key == "name" {
-                if let Some(name) = toml_string_value(line) {
-                    push(
-                        outline,
-                        name,
-                        SymbolKind::Module,
-                        line_num,
-                        Some(section.to_string()),
-                    );
-                }
+            if let Some(name) = toml_string_value(line) {
+                push(
+                    outline,
+                    name,
+                    SymbolKind::Module,
+                    line_num,
+                    Some(section.to_string()),
+                );
             }
         }
         _ => {}
