@@ -17,6 +17,7 @@ lightweight_parser!(HclParser, Language::Hcl);
 lightweight_parser!(RParser, Language::R);
 lightweight_parser!(MarkdownParser, Language::Markdown);
 lightweight_parser!(JsonParser, Language::Json);
+lightweight_parser!(TomlParser, Language::Toml);
 lightweight_parser!(YamlParser, Language::Yaml);
 lightweight_parser!(DartParser, Language::Dart);
 lightweight_parser!(KotlinParser, Language::Kotlin);
@@ -35,6 +36,13 @@ lightweight_parser!(MlirParser, Language::Mlir);
 lightweight_parser!(TablegenParser, Language::Tablegen);
 
 fn parse_lightweight(path: &str, source: &str, language: Language) -> FileOutline {
+    if language == Language::Json && path.ends_with("package.json") {
+        return parse_package_json(path, source);
+    }
+    if language == Language::Toml {
+        return parse_toml(path, source);
+    }
+
     let mut outline = FileOutline::new(path.to_string(), language);
     outline.line_count = count_lines(source);
     outline.byte_size = source.len() as u64;
@@ -52,6 +60,7 @@ fn parse_lightweight(path: &str, source: &str, language: Language) -> FileOutlin
             Language::R => parse_r(line, line_num, &mut outline),
             Language::Markdown => parse_markdown(line, line_num, &mut outline),
             Language::Json => parse_json(line, line_num, &mut outline),
+            Language::Toml => {}
             Language::Yaml => parse_yaml(raw_line, line_num, &mut outline, &mut yaml_stack),
             Language::Dart => parse_dart(line, line_num, &mut outline),
             Language::Kotlin => parse_kotlin(line, line_num, &mut outline),
@@ -195,6 +204,202 @@ fn parse_json(line: &str, line_num: u32, outline: &mut FileOutline) {
                 None,
             );
         }
+    }
+}
+
+fn parse_package_json(path: &str, source: &str) -> FileOutline {
+    let mut outline = FileOutline::new(path.to_string(), Language::Json);
+    outline.line_count = count_lines(source);
+    outline.byte_size = source.len() as u64;
+    let manifest_sections = [
+        "scripts",
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "workspaces",
+        "exports",
+        "bin",
+    ];
+    let mut active_section: Option<String> = None;
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let line_num = (idx + 1) as u32;
+        let line = raw_line.trim();
+        if line.starts_with('}') || line.starts_with(']') {
+            active_section = None;
+            continue;
+        }
+
+        let Some(name) = json_key(line) else {
+            if let Some(section) = active_section.as_deref() {
+                if section == "workspaces" {
+                    if let Some(value) = json_string_value(line) {
+                        push(
+                            &mut outline,
+                            value,
+                            SymbolKind::Module,
+                            line_num,
+                            Some("workspace".to_string()),
+                        );
+                    }
+                }
+            }
+            continue;
+        };
+
+        if manifest_sections.contains(&name.as_str()) {
+            push(
+                &mut outline,
+                name.clone(),
+                SymbolKind::Module,
+                line_num,
+                Some("package manifest section".to_string()),
+            );
+            active_section = Some(name);
+            continue;
+        }
+
+        match active_section.as_deref() {
+            Some("scripts") => push(
+                &mut outline,
+                name,
+                SymbolKind::Function,
+                line_num,
+                Some("npm script".to_string()),
+            ),
+            Some("dependencies") | Some("devDependencies") | Some("peerDependencies") => push(
+                &mut outline,
+                name,
+                SymbolKind::Import,
+                line_num,
+                active_section.clone(),
+            ),
+            Some("exports") | Some("bin") => push(
+                &mut outline,
+                name,
+                SymbolKind::Constant,
+                line_num,
+                active_section.clone(),
+            ),
+            Some("workspaces") => push(
+                &mut outline,
+                name,
+                SymbolKind::Module,
+                line_num,
+                Some("workspace".to_string()),
+            ),
+            _ => {}
+        }
+    }
+
+    infer_symbol_ranges(&mut outline);
+    outline
+}
+
+fn parse_toml(path: &str, source: &str) -> FileOutline {
+    let mut outline = FileOutline::new(path.to_string(), Language::Toml);
+    outline.line_count = count_lines(source);
+    outline.byte_size = source.len() as u64;
+    let mut section = String::new();
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let line_num = (idx + 1) as u32;
+        let line = raw_line.trim();
+        if line.is_empty() || starts_comment(line) {
+            continue;
+        }
+
+        if let Some(name) = toml_section(line) {
+            section = name.clone();
+            push(
+                &mut outline,
+                name,
+                SymbolKind::Module,
+                line_num,
+                Some("toml section".to_string()),
+            );
+            continue;
+        }
+
+        let Some((key, _)) = line.split_once('=') else {
+            continue;
+        };
+        let key = clean_ident(key);
+        if key.is_empty() {
+            continue;
+        }
+
+        if path.ends_with("Cargo.toml") {
+            parse_cargo_toml_key(&mut outline, &section, &key, line, line_num);
+        } else {
+            let detail = (!section.is_empty()).then(|| section.clone());
+            push(&mut outline, key, SymbolKind::Constant, line_num, detail);
+        }
+    }
+
+    infer_symbol_ranges(&mut outline);
+    outline
+}
+
+fn parse_cargo_toml_key(
+    outline: &mut FileOutline,
+    section: &str,
+    key: &str,
+    line: &str,
+    line_num: u32,
+) {
+    match section {
+        "package" if matches!(key, "name" | "version" | "edition") => push(
+            outline,
+            key.to_string(),
+            SymbolKind::Constant,
+            line_num,
+            Some("package metadata".to_string()),
+        ),
+        "dependencies" | "dev-dependencies" | "build-dependencies" => push(
+            outline,
+            key.to_string(),
+            SymbolKind::Import,
+            line_num,
+            Some(section.to_string()),
+        ),
+        "features" => push(
+            outline,
+            key.to_string(),
+            SymbolKind::Constant,
+            line_num,
+            Some("feature".to_string()),
+        ),
+        "workspace" if key == "members" => {
+            for member in quoted_strings(line) {
+                push(
+                    outline,
+                    member,
+                    SymbolKind::Module,
+                    line_num,
+                    Some("workspace member".to_string()),
+                );
+            }
+        }
+        section
+            if section.starts_with("bin")
+                || section.starts_with("example")
+                || section.starts_with("test")
+                || section.starts_with("bench") =>
+        {
+            if key == "name" {
+                if let Some(name) = toml_string_value(line) {
+                    push(
+                        outline,
+                        name,
+                        SymbolKind::Module,
+                        line_num,
+                        Some(section.to_string()),
+                    );
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -568,6 +773,40 @@ fn quoted_strings(rest: &str) -> Vec<String> {
     values
 }
 
+fn json_key(line: &str) -> Option<String> {
+    if !line.starts_with('"') {
+        return None;
+    }
+    let end = line[1..].find('"')?;
+    let rest = line[1 + end + 1..].trim_start();
+    rest.starts_with(':').then(|| line[1..1 + end].to_string())
+}
+
+fn json_string_value(line: &str) -> Option<String> {
+    let line = line.trim().trim_end_matches(',');
+    if !line.starts_with('"') || line.contains(':') {
+        return None;
+    }
+    let end = line[1..].find('"')?;
+    Some(line[1..1 + end].to_string())
+}
+
+fn toml_section(line: &str) -> Option<String> {
+    let line = line
+        .strip_prefix("[[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+        .or_else(|| {
+            line.strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+        })?;
+    Some(line.trim().to_string())
+}
+
+fn toml_string_value(line: &str) -> Option<String> {
+    let (_, value) = line.split_once('=')?;
+    quoted_strings(value).into_iter().next()
+}
+
 fn quoted_import(line: &str, keywords: &[&str]) -> Option<String> {
     if !keywords
         .iter()
@@ -767,6 +1006,68 @@ function renderTitle() {}
         assert!(names(&outline, SymbolKind::Constant).contains(&"title".to_string()));
         assert!(names(&outline, SymbolKind::Function).contains(&"renderTitle".to_string()));
         assert!(names(&outline, SymbolKind::ClassDef).contains(&".card".to_string()));
+    }
+
+    #[test]
+    fn package_json_outlines_manifest_sections() {
+        let outline = parse_lightweight(
+            "package.json",
+            r#"
+{
+  "scripts": {
+    "test": "vitest"
+  },
+  "dependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}
+"#,
+            Language::Json,
+        );
+
+        assert!(names(&outline, SymbolKind::Module).contains(&"scripts".to_string()));
+        assert!(names(&outline, SymbolKind::Function).contains(&"test".to_string()));
+        assert!(names(&outline, SymbolKind::Import).contains(&"react".to_string()));
+        assert!(names(&outline, SymbolKind::Import).contains(&"vite".to_string()));
+        assert!(names(&outline, SymbolKind::Module).contains(&"packages/*".to_string()));
+    }
+
+    #[test]
+    fn cargo_toml_outlines_manifest_sections() {
+        let outline = parse_lightweight(
+            "Cargo.toml",
+            r#"
+[package]
+name = "lexa"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+
+[features]
+default = []
+
+[workspace]
+members = ["crates/*"]
+
+[[bin]]
+name = "lexa"
+"#,
+            Language::Toml,
+        );
+
+        assert!(names(&outline, SymbolKind::Module).contains(&"package".to_string()));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"name".to_string()));
+        assert!(names(&outline, SymbolKind::Import).contains(&"serde".to_string()));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"default".to_string()));
+        assert!(names(&outline, SymbolKind::Module).contains(&"crates/*".to_string()));
+        assert!(names(&outline, SymbolKind::Module).contains(&"lexa".to_string()));
     }
 
     #[test]

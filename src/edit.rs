@@ -32,6 +32,20 @@ pub struct EditResult {
     pub preview: String,
 }
 
+pub struct CreateRequest {
+    pub path: PathBuf,
+    pub content: String,
+    pub overwrite: bool,
+    pub dry_run: bool,
+}
+
+pub struct CreateResult {
+    pub hash: u64,
+    pub line_count: usize,
+    pub byte_size: u64,
+    pub changed: bool,
+}
+
 pub fn apply_edit(req: &EditRequest) -> Result<EditResult> {
     let path = req.path.as_path();
     let old_content = std::fs::read_to_string(&req.path)
@@ -65,6 +79,27 @@ pub fn apply_edit(req: &EditRequest) -> Result<EditResult> {
         new_hash,
         changed,
         preview,
+    })
+}
+
+pub fn create_file(req: &CreateRequest) -> Result<CreateResult> {
+    if req.path.exists() && !req.overwrite {
+        bail!("file already exists: {}", req.path.display());
+    }
+
+    let hash = hash_content(&req.content);
+    let line_count = req.content.lines().count().max(1);
+    let byte_size = req.content.len() as u64;
+
+    if !req.dry_run {
+        atomic_write(&req.path, &req.content)?;
+    }
+
+    Ok(CreateResult {
+        hash,
+        line_count,
+        byte_size,
+        changed: !req.dry_run,
     })
 }
 

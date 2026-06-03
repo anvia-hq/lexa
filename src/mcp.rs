@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::edit::{self, EditOp};
 use crate::engine::{Engine, SearchOptions};
+use crate::project_path::{normalize_project_path, project_target_path, PathMode};
 use crate::snapshot;
 use crate::store;
 
@@ -130,24 +131,25 @@ impl McpServer {
 
     fn call_tool(&mut self, name: &str, args: &Value) -> Result<ToolOutput> {
         match name {
-            "lexa_map" => Ok(self.tool_map(args)),
+            "lexa_files" => Ok(self.tool_map(args)),
             "lexa_list" => Ok(self.tool_list(opt_str(args, "path").unwrap_or(""))),
             "lexa_glob" => self.tool_glob(req_str(args, "pattern")?),
-            "lexa_find_path" => self.tool_find_path(
+            "lexa_path_search" => self.tool_find_path(
                 req_any_str(args, &["query", "path", "pattern", "name"])?,
                 opt_usize(args, "max_results")
                     .or_else(|| opt_usize(args, "max"))
                     .unwrap_or(20),
             ),
             "lexa_outline" => self.tool_outline(req_str(args, "path")?),
-            "lexa_find_symbol" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
-            "lexa_find_word" => self.tool_find_word(req_any_str(args, &["word", "query"])?),
-            "lexa_search" => self.tool_search(args),
-            "lexa_find_callers" => self.tool_find_callers(req_any_str(args, &["name", "query"])?),
+            "lexa_symbol_defs" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
+            "lexa_word_refs" => self.tool_find_word(req_any_str(args, &["word", "query"])?),
+            "lexa_text_search" => self.tool_search(args),
+            "lexa_callers" => self.tool_find_callers(req_any_str(args, &["name", "query"])?),
             "lexa_brief" => self.tool_brief(req_any_str(args, &["task", "query"])?),
             "lexa_trace_deps" => self.tool_trace_deps(args),
             "lexa_read" => self.tool_read(args),
             "lexa_patch" => self.tool_patch(args),
+            "lexa_create" => self.tool_create(args),
             "lexa_changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
             "lexa_recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
             "lexa_status" => Ok(self.tool_status()),
@@ -288,7 +290,8 @@ impl McpServer {
     }
 
     fn tool_outline(&self, path: &str) -> Result<ToolOutput> {
-        let Some(outline) = self.engine.get_outline(path) else {
+        let path = normalize_project_path(&self.root, path, PathMode::Existing)?;
+        let Some(outline) = self.engine.get_outline(&path) else {
             bail!("file not found: {path}");
         };
 
@@ -463,14 +466,14 @@ impl McpServer {
     }
 
     fn tool_trace_deps(&self, args: &Value) -> Result<ToolOutput> {
-        let path = req_str(args, "path")?;
+        let path = normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Existing)?;
         let direction = opt_str(args, "direction").unwrap_or("imported_by");
         let transitive = opt_bool(args, "transitive").unwrap_or(false);
         let deps = match (direction, transitive) {
-            ("depends_on", true) => self.engine.get_transitive_depends_on(path),
-            ("depends_on", false) => self.engine.get_depends_on(path),
-            ("imported_by", true) => self.engine.get_transitive_imported_by(path),
-            ("imported_by", false) => self.engine.get_imported_by(path),
+            ("depends_on", true) => self.engine.get_transitive_depends_on(&path),
+            ("depends_on", false) => self.engine.get_depends_on(&path),
+            ("imported_by", true) => self.engine.get_transitive_imported_by(&path),
+            ("imported_by", false) => self.engine.get_imported_by(&path),
             _ => bail!("direction must be imported_by or depends_on"),
         };
 
@@ -492,14 +495,13 @@ impl McpServer {
     }
 
     fn tool_read(&self, args: &Value) -> Result<ToolOutput> {
-        let path = req_str(args, "path")?;
-        ensure_safe_relative_path(path)?;
+        let path = normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Existing)?;
         let line_start = opt_u32(args, "line_start");
         let line_end = opt_u32(args, "line_end");
         let result = self
             .engine
             .read_file_rich(
-                path,
+                &path,
                 line_start,
                 line_end,
                 opt_bool(args, "compact").unwrap_or(false),
@@ -540,9 +542,9 @@ impl McpServer {
     }
 
     fn tool_patch(&mut self, args: &Value) -> Result<ToolOutput> {
-        let rel_path = req_str(args, "path")?;
-        ensure_safe_relative_path(rel_path)?;
-        let abs_path = self.root.join(rel_path);
+        let rel_path =
+            normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Existing)?;
+        let abs_path = project_target_path(&self.root, &rel_path);
         let op = parse_edit_op(req_str(args, "op")?)?;
 
         let request = edit::EditRequest {
@@ -579,7 +581,7 @@ impl McpServer {
 
         if result.changed {
             self.engine
-                .index_edited_file(rel_path, &result.new_content, store_op(op));
+                .index_edited_file(&rel_path, &result.new_content, store_op(op));
             if self.persist_graph {
                 snapshot::write_snapshot(&self.engine, &self.graph_path)?;
             }
@@ -611,6 +613,50 @@ impl McpServer {
                 }),
             ))
         }
+    }
+
+    fn tool_create(&mut self, args: &Value) -> Result<ToolOutput> {
+        let rel_path =
+            normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Create)?;
+        let abs_path = project_target_path(&self.root, &rel_path);
+        let content = opt_str(args, "content").unwrap_or("").to_string();
+        let overwrite = opt_bool(args, "overwrite").unwrap_or(false);
+        let dry_run = opt_bool(args, "dry_run").unwrap_or(false);
+
+        let request = edit::CreateRequest {
+            path: abs_path,
+            content: content.clone(),
+            overwrite,
+            dry_run,
+        };
+        let result = edit::create_file(&request)?;
+        if !dry_run {
+            self.engine
+                .index_edited_file(&rel_path, &content, store::Op::Create);
+            if self.persist_graph {
+                snapshot::write_snapshot(&self.engine, &self.graph_path)?;
+            }
+        }
+
+        let hash = format!("{:x}", result.hash);
+        let text = if dry_run {
+            format!("create dry-run: {} lines, hash:{hash}", result.line_count)
+        } else {
+            format!("file created: {} lines, hash:{hash}", result.line_count)
+        };
+        Ok(ToolOutput::new(
+            text,
+            json!({
+                "path": rel_path,
+                "op": "create",
+                "dry_run": dry_run,
+                "changed": result.changed,
+                "hash": hash,
+                "line_count": result.line_count,
+                "byte_size": result.byte_size,
+                "change_sequence": self.engine.store().current_seq(),
+            }),
+        ))
     }
 
     fn tool_changes(&self, since: u64) -> ToolOutput {
@@ -724,16 +770,9 @@ impl McpServer {
                 bail!("pipeline requires query/pipeline string or steps array");
             };
 
-        let text = crate::pipeline::run(&self.engine, &pipeline);
-        Ok(ToolOutput::new(
-            text.clone(),
-            json!({
-                "pipeline": pipeline,
-                "text": text,
-                "structured": false,
-                "note": "Pipeline currently returns text because each stage can change result shape."
-            }),
-        ))
+        let output = crate::pipeline::run_output(&self.engine, &pipeline);
+        let text = output.render();
+        Ok(ToolOutput::new(text, output.to_json(&pipeline)))
     }
 }
 
@@ -864,8 +903,8 @@ fn json_rpc_error(id: Option<Value>, code: i32, message: &str) -> Value {
 fn tools() -> Value {
     json!([
         tool(
-            "lexa_map",
-            "Whole-repo file map with language, line, and symbol counts.",
+            "lexa_files",
+            "List indexed files with language, line, and symbol counts.",
             json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":[]})
         ),
         tool(
@@ -879,7 +918,7 @@ fn tools() -> Value {
             json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})
         ),
         tool(
-            "lexa_find_path",
+            "lexa_path_search",
             "Fuzzy path search against indexed file names.",
             json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":["query"]})
         ),
@@ -889,22 +928,22 @@ fn tools() -> Value {
             json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
         ),
         tool(
-            "lexa_find_symbol",
-            "Find definitions of a symbol by exact name.",
+            "lexa_symbol_defs",
+            "Find exact symbol definitions.",
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
         ),
         tool(
-            "lexa_find_word",
-            "Find exact word or identifier occurrences.",
+            "lexa_word_refs",
+            "Find exact identifier or word references.",
             json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
         ),
         tool(
-            "lexa_search",
-            "Search indexed text. Supports regex, scope, compact, paths_only, and path_glob.",
+            "lexa_text_search",
+            "Search indexed text by substring or regex. Supports scope, compact, paths_only, and path_glob.",
             json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"regex":{"type":"boolean"},"scope":{"type":"boolean"},"compact":{"type":"boolean"},"paths_only":{"type":"boolean"},"path_glob":{"type":"string"}},"required":["query"]})
         ),
         tool(
-            "lexa_find_callers",
+            "lexa_callers",
             "Find non-definition call sites for a symbol.",
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
         ),
@@ -927,6 +966,11 @@ fn tools() -> Value {
             "lexa_patch",
             "Apply line-based replace, insert, or delete with optional if_hash and dry_run.",
             json!({"type":"object","properties":{"path":{"type":"string"},"op":{"type":"string","enum":["replace","insert","delete"]},"content":{"type":"string"},"range_start":{"type":"integer"},"range_end":{"type":"integer"},"after":{"type":"integer"},"if_hash":{"type":"string"},"dry_run":{"type":"boolean"}},"required":["path","op"]})
+        ),
+        tool(
+            "lexa_create",
+            "Create a file safely. Refuses overwrites unless overwrite is true.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"overwrite":{"type":"boolean"},"dry_run":{"type":"boolean"}},"required":["path"]})
         ),
         tool(
             "lexa_changes",
@@ -1010,18 +1054,6 @@ fn store_op(op: EditOp) -> store::Op {
     }
 }
 
-fn ensure_safe_relative_path(path: &str) -> Result<()> {
-    let path = Path::new(path);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        bail!("path must be relative to project root and must not contain ..");
-    }
-    Ok(())
-}
-
 fn render_search_results(query: &str, results: &[crate::types::SearchResult]) -> String {
     if results.is_empty() {
         return format!("No results found for '{query}'");
@@ -1043,9 +1075,7 @@ fn rich_results_json(results: &[crate::engine::RichSearchResult]) -> Vec<Value> 
             json!({
                 "path": &result.path,
                 "line": result.line_num,
-                "line_num": result.line_num,
                 "text": &result.line_text,
-                "line_text": &result.line_text,
                 "scope": result.scope.as_ref().map(|scope| json!({
                     "name": &scope.name,
                     "kind": scope.kind.to_string(),
@@ -1157,5 +1187,30 @@ mod tests {
         let params = json!({ "protocolVersion": "2025-11-25" });
 
         assert_eq!(requested_protocol_version(Some(&params)), "2025-11-25");
+    }
+
+    #[test]
+    fn tools_use_clear_breaking_names() {
+        let tools = tools();
+        let names = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"lexa_files"));
+        assert!(names.contains(&"lexa_path_search"));
+        assert!(names.contains(&"lexa_symbol_defs"));
+        assert!(names.contains(&"lexa_word_refs"));
+        assert!(names.contains(&"lexa_text_search"));
+        assert!(names.contains(&"lexa_callers"));
+        assert!(names.contains(&"lexa_create"));
+        assert!(!names.contains(&"lexa_map"));
+        assert!(!names.contains(&"lexa_find_path"));
+        assert!(!names.contains(&"lexa_find_symbol"));
+        assert!(!names.contains(&"lexa_find_word"));
+        assert!(!names.contains(&"lexa_search"));
+        assert!(!names.contains(&"lexa_find_callers"));
     }
 }

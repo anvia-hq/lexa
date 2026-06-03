@@ -11,7 +11,7 @@ Lexa indexes a project into a portable graph, then answers codebase questions th
 
 ```bash
 lexa index .
-lexa search "handle_request" --scope
+lexa text-search "handle_request" --scope
 lexa outline src/main.rs
 lexa mcp .
 ```
@@ -48,10 +48,10 @@ export PATH="$HOME/.cargo/bin:$PATH"
 lexa index /path/to/project
 cd /path/to/project
 
-lexa map
-lexa search "handle_request"
+lexa files
+lexa text-search "handle_request"
 lexa outline src/main.rs
-lexa find-symbol Engine
+lexa symbol-defs Engine
 lexa read src/main.rs -L 1-80
 ```
 
@@ -61,7 +61,7 @@ Use a custom graph path:
 
 ```bash
 lexa --graph /tmp/project.graph.lexa index /path/to/project
-lexa --graph /tmp/project.graph.lexa search "Parser"
+lexa --graph /tmp/project.graph.lexa text-search "Parser"
 ```
 
 ## Commands
@@ -69,19 +69,20 @@ lexa --graph /tmp/project.graph.lexa search "Parser"
 | Command | Purpose |
 | --- | --- |
 | `index <path>` | Index a project and write a graph |
-| `map [path]` | Show indexed files |
+| `files [path]` | Show indexed files |
 | `list [path]` | List directory children |
 | `glob <pattern>` | Match indexed paths |
-| `find-path <pattern>` | Fuzzy path search |
-| `search <query>` | Search indexed text |
+| `path-search <pattern>` | Fuzzy path search |
+| `text-search <query>` | Search indexed text |
 | `outline <path>` | Show imports and symbols |
-| `find-symbol <name>` | Find definitions |
-| `find-word <word>` | Find exact word occurrences |
-| `find-callers <name>` | Find call sites |
+| `symbol-defs <name>` | Find exact symbol definitions |
+| `word-refs <word>` | Find exact word or identifier references |
+| `callers <name>` | Find non-definition call sites |
 | `trace-deps <path>` | Trace parsed imports |
 | `brief <task>` | Build task-focused context |
 | `read <path>` | Read a file or line range |
 | `patch <path> <op>` | Apply a line-based edit |
+| `create <path>` | Create a file safely |
 | `changes [since]` | Show session-local changes |
 | `recent` | Show recently modified files |
 | `status` | Show index status |
@@ -92,10 +93,10 @@ lexa --graph /tmp/project.graph.lexa search "Parser"
 Useful search flags:
 
 ```bash
-lexa search "render" --scope
-lexa search --regex "render[A-Z]\\w+"
-lexa search "useEffect" --path-glob "**/*.{ts,tsx}"
-lexa search "TODO" --compact --paths-only
+lexa text-search "render" --scope
+lexa text-search --regex "render[A-Z]\\w+"
+lexa text-search "useEffect" --path-glob "**/*.{ts,tsx}"
+lexa text-search "TODO" --compact --paths-only
 ```
 
 Safe edit example:
@@ -103,6 +104,7 @@ Safe edit example:
 ```bash
 lexa read src/main.rs --hash
 lexa patch src/main.rs replace -L 12 --if-hash <hash> --content '    println!("updated");'
+lexa create src/new_file.rs --content 'pub fn new_file() {}'
 ```
 
 ## MCP
@@ -136,7 +138,7 @@ Example config:
 
 Tree-sitter parsers: Zig, Python, Rust, TypeScript, JavaScript, Go, C, C++, Java, Ruby, PHP.
 
-Lightweight parsers: HCL, R, Markdown, JSON, YAML, Dart, Kotlin, Swift, Svelte, Vue, Astro, shell, CSS, SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, TableGen.
+Lightweight parsers: HCL, R, Markdown, JSON, TOML, YAML, Dart, Kotlin, Swift, Svelte, Vue, Astro, shell, CSS, SCSS, SQL, protobuf, Fortran, LLVM IR, MLIR, TableGen.
 
 ## Development
 

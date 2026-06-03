@@ -13,6 +13,7 @@ pub enum Op {
     Insert,
     Delete,
     Tombstone,
+    Create,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -32,6 +32,7 @@ pub fn get_parser(language: Language) -> Option<Box<dyn Parser>> {
         Language::R => Some(Box::new(lightweight::RParser)),
         Language::Markdown => Some(Box::new(lightweight::MarkdownParser)),
         Language::Json => Some(Box::new(lightweight::JsonParser)),
+        Language::Toml => Some(Box::new(lightweight::TomlParser)),
         Language::Yaml => Some(Box::new(lightweight::YamlParser)),
         Language::Dart => Some(Box::new(lightweight::DartParser)),
         Language::Kotlin => Some(Box::new(lightweight::KotlinParser)),

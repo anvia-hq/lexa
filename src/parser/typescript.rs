@@ -152,41 +152,10 @@ fn parse_node(node: tree_sitter::Node, source: &str, outline: &mut FileOutline) 
                 });
             }
             "export_statement" => {
-                let mut inner_cursor = child.walk();
-                for inner in child.children(&mut inner_cursor) {
-                    match inner.kind() {
-                        "function_declaration"
-                        | "class_declaration"
-                        | "interface_declaration"
-                        | "type_alias_declaration"
-                        | "enum_declaration" => {}
-                        _ => {}
-                    }
-                }
                 parse_node(child, source, outline);
             }
             "lexical_declaration" | "variable_declaration" => {
-                let mut inner_cursor = child.walk();
-                for inner in child.children(&mut inner_cursor) {
-                    if inner.kind() == "variable_declarator" {
-                        if let Some(name_node) = inner.child_by_field_name("name") {
-                            let name = get_node_text(name_node, source).to_string();
-                            let line = byte_offset_to_line(source, child.start_byte());
-                            if name
-                                .chars()
-                                .all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
-                            {
-                                outline.symbols.push(Symbol {
-                                    name,
-                                    kind: SymbolKind::Constant,
-                                    line_start: line,
-                                    line_end: byte_offset_to_line(source, child.end_byte()),
-                                    detail: None,
-                                });
-                            }
-                        }
-                    }
-                }
+                parse_variable_declaration(child, source, outline);
             }
             _ => {
                 if child.child_count() > 0 {
@@ -194,5 +163,84 @@ fn parse_node(node: tree_sitter::Node, source: &str, outline: &mut FileOutline) 
                 }
             }
         }
+    }
+}
+
+fn parse_variable_declaration(node: tree_sitter::Node, source: &str, outline: &mut FileOutline) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "variable_declarator" {
+            continue;
+        }
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        if name_node.kind() != "identifier" {
+            continue;
+        }
+
+        let name = get_node_text(name_node, source).to_string();
+        let line = byte_offset_to_line(source, node.start_byte());
+        let value = child.child_by_field_name("value");
+        let kind = if value.is_some_and(is_function_value) {
+            SymbolKind::Function
+        } else {
+            SymbolKind::Constant
+        };
+        let detail = value.map(|value| value.kind().to_string());
+        outline.symbols.push(Symbol {
+            name,
+            kind,
+            line_start: line,
+            line_end: byte_offset_to_line(source, node.end_byte()),
+            detail,
+        });
+    }
+}
+
+fn is_function_value(node: tree_sitter::Node) -> bool {
+    matches!(
+        node.kind(),
+        "arrow_function" | "function_expression" | "generator_function"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn symbol_kind(outline: &FileOutline, name: &str) -> Option<SymbolKind> {
+        outline
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == name)
+            .map(|symbol| symbol.kind)
+    }
+
+    #[test]
+    fn indexes_exported_const_function_symbols() {
+        let outline = parse_js_ts(
+            "middleware.ts",
+            "export const authMiddleware = (req, res, next) => next();\n",
+            Language::TypeScript,
+            &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        );
+
+        assert_eq!(
+            symbol_kind(&outline, "authMiddleware"),
+            Some(SymbolKind::Function)
+        );
+    }
+
+    #[test]
+    fn indexes_top_level_const_symbols_without_uppercase_filter() {
+        let outline = parse_js_ts(
+            "keys.ts",
+            "const apiKeys = new Map();\n",
+            Language::TypeScript,
+            &tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        );
+
+        assert_eq!(symbol_kind(&outline, "apiKeys"), Some(SymbolKind::Constant));
     }
 }

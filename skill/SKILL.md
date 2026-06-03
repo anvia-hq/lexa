@@ -45,11 +45,11 @@ Start broad, then narrow:
 
 ```bash
 lexa status
-lexa map
-lexa find-path "<partial-path>"
+lexa files
+lexa path-search "<partial-path>"
 lexa outline <path>
-lexa search "<query>" --scope
-lexa find-symbol <name>
+lexa text-search "<query>" --scope
+lexa symbol-defs <name>
 lexa trace-deps <path>
 ```
 
@@ -62,20 +62,21 @@ All CLI commands:
 | Command | Use |
 | --- | --- |
 | `index <path>` | Index a project and write the graph |
-| `map [path]` | Show indexed files with language, lines, and symbols |
+| `files [path]` | Show indexed files with language, lines, and symbols |
 | `list [path]` | List immediate children of an indexed directory |
-| `find-path <pattern>` | Fuzzy path search |
-| `search <query>` | Search indexed text |
+| `path-search <pattern>` | Fuzzy path search |
+| `text-search <query>` | Search indexed text |
 | `outline <path>` | Show imports and symbols for one file |
-| `find-symbol <name>` | Find symbol definitions |
-| `find-word <word>` | Find exact word or identifier occurrences |
+| `symbol-defs <name>` | Find exact symbol definitions |
+| `word-refs <word>` | Find exact word or identifier references |
 | `trace-deps <path>` | Trace import dependencies |
 | `recent` | Show recently modified files |
-| `find-callers <name>` | Find non-definition call sites |
+| `callers <name>` | Find non-definition call sites |
 | `brief <task>` | Compose task-focused context |
 | `changes [since]` | Show changed files since a sequence number |
 | `read <path>` | Read a file, line range, or hash |
 | `patch <path> <op>` | Apply `replace`, `insert`, or `delete` edits |
+| `create <path>` | Create a file safely |
 | `glob <pattern>` | Match indexed paths with a glob |
 | `status` | Show index status |
 | `watch [path]` | Watch files and refresh the graph |
@@ -85,12 +86,12 @@ All CLI commands:
 Important search flags:
 
 ```bash
-lexa search "<query>" --max 20
-lexa search "<query>" --regex
-lexa search "<query>" --scope
-lexa search "<query>" --compact
-lexa search "<query>" --paths-only
-lexa search "<query>" --path-glob "**/*.{ts,tsx}"
+lexa text-search "<query>" --max 20
+lexa text-search "<query>" --regex
+lexa text-search "<query>" --scope
+lexa text-search "<query>" --compact
+lexa text-search "<query>" --paths-only
+lexa text-search "<query>" --path-glob "**/*.{ts,tsx}"
 ```
 
 ## Pipelines
@@ -144,6 +145,7 @@ For line-based edits, prefer Lexa patch operations when they match the task:
 lexa patch <path> replace -L 12-14 --content '<new content>'
 lexa patch <path> insert --after 20 --content '<new content>'
 lexa patch <path> delete -L 40-45
+lexa create <path> --content '<new file content>'
 ```
 
 For safety, pair edits with `--if-hash` when another process or user may have changed the file:
@@ -185,19 +187,20 @@ MCP tools exposed by Lexa:
 
 | Tool | Use |
 | --- | --- |
-| `lexa_map` | Whole-repo file map |
+| `lexa_files` | Whole-repo file map |
 | `lexa_list` | Directory listing |
 | `lexa_glob` | Glob path matching |
-| `lexa_find_path` | Fuzzy file path search |
+| `lexa_path_search` | Fuzzy file path search |
 | `lexa_outline` | File symbols and imports |
-| `lexa_find_symbol` | Symbol definitions |
-| `lexa_find_word` | Exact word occurrences |
-| `lexa_search` | Text search with regex/scope/compact/path filters |
-| `lexa_find_callers` | Non-definition call sites |
+| `lexa_symbol_defs` | Exact symbol definitions |
+| `lexa_word_refs` | Exact word or identifier references |
+| `lexa_text_search` | Text search with regex/scope/compact/path filters |
+| `lexa_callers` | Non-definition call sites |
 | `lexa_brief` | Task-focused context |
 | `lexa_trace_deps` | Import dependency tracing |
 | `lexa_read` | Hash-aware file reads |
 | `lexa_patch` | Atomic line edits |
+| `lexa_create` | Safe file creation |
 | `lexa_changes` | Changed files since sequence |
 | `lexa_recent` | Recently modified files |
 | `lexa_status` | Index status |

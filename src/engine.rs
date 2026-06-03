@@ -60,6 +60,11 @@ pub struct ContextSymbol {
     pub content: String,
 }
 
+struct ScoredSearchResult {
+    score: i32,
+    result: SearchResult,
+}
+
 pub struct DepGraph {
     forward: HashMap<String, Vec<String>>,
     reverse: HashMap<String, HashSet<String>>,
@@ -237,7 +242,7 @@ impl Engine {
                 self.store
                     .record_snapshot(path, byte_size, hash_content(content));
             }
-            Op::Replace | Op::Insert | Op::Delete => {
+            Op::Replace | Op::Insert | Op::Delete | Op::Create => {
                 self.store
                     .record_edit(path, 0, op, hash_content(content), byte_size);
             }
@@ -698,20 +703,6 @@ impl Engine {
         keywords.sort();
         keywords.dedup();
 
-        let mut snippets: Vec<SearchResult> = Vec::new();
-        for keyword in &keywords {
-            let results = self.search(keyword, 5);
-            for result in results {
-                if !snippets
-                    .iter()
-                    .any(|x| x.path == result.path && x.line_num == result.line_num)
-                {
-                    snippets.push(result);
-                }
-            }
-        }
-        snippets.truncate(max_results);
-
         let mut relevant_symbols: Vec<ContextSymbol> = Vec::new();
         for keyword in &keywords {
             let symbols = self.find_symbol(keyword);
@@ -742,13 +733,93 @@ impl Engine {
         }
         relevant_symbols.truncate(5);
 
+        let mut snippets = self.ranked_context_snippets(&keywords, &relevant_symbols, max_results);
+
         ContextDetails {
             task: task.to_string(),
             keywords,
             max_results,
             relevant_symbols,
-            snippets,
+            snippets: std::mem::take(&mut snippets),
         }
+    }
+
+    fn ranked_context_snippets(
+        &self,
+        keywords: &[String],
+        relevant_symbols: &[ContextSymbol],
+        max_results: usize,
+    ) -> Vec<SearchResult> {
+        let mut scored: Vec<ScoredSearchResult> = Vec::new();
+        for keyword in keywords {
+            let results = self.search(keyword, 8);
+            for result in results {
+                if scored
+                    .iter()
+                    .any(|x| x.result.path == result.path && x.result.line_num == result.line_num)
+                {
+                    continue;
+                }
+                let score = self.context_snippet_score(keyword, &result, relevant_symbols);
+                scored.push(ScoredSearchResult { score, result });
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.result.path.cmp(&b.result.path))
+                .then_with(|| a.result.line_num.cmp(&b.result.line_num))
+        });
+        scored
+            .into_iter()
+            .take(max_results)
+            .map(|entry| entry.result)
+            .collect()
+    }
+
+    fn context_snippet_score(
+        &self,
+        keyword: &str,
+        result: &SearchResult,
+        relevant_symbols: &[ContextSymbol],
+    ) -> i32 {
+        let keyword_lower = keyword.to_lowercase();
+        let path_lower = result.path.to_lowercase();
+        let line_lower = result.line_text.to_lowercase();
+        let mut score = 0;
+
+        if line_lower.contains(&keyword_lower) {
+            score += 20;
+        }
+        if result
+            .line_text
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .any(|word| word.eq_ignore_ascii_case(keyword))
+        {
+            score += 30;
+        }
+        if path_lower.contains(&keyword_lower) {
+            score += 15;
+        }
+        if relevant_symbols
+            .iter()
+            .any(|symbol| symbol.path == result.path || symbol.name.eq_ignore_ascii_case(keyword))
+        {
+            score += 40;
+        }
+
+        let language = self
+            .file_meta
+            .get(&result.path)
+            .map(|meta| meta.language)
+            .unwrap_or_else(|| detect_language(&result.path));
+        if is_comment_or_blank(&result.line_text, language) {
+            score -= 20;
+        }
+        if keyword.len() <= 3 {
+            score -= 10;
+        }
+        score
     }
 
     pub fn get_changes(&self, since_seq: u64) -> Vec<(String, u64, String)> {

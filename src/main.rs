@@ -6,6 +6,7 @@ mod index;
 mod mcp;
 mod parser;
 mod pipeline;
+mod project_path;
 mod snapshot;
 mod store;
 mod types;
@@ -14,6 +15,7 @@ mod walker;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use engine::SearchOptions;
+use project_path::{normalize_project_path, project_target_path, PathMode};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -48,7 +50,8 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
-    Map {
+    #[command(name = "files")]
+    Files {
         #[arg(default_value = "")]
         path: String,
     },
@@ -58,15 +61,16 @@ enum Commands {
         path: String,
     },
 
-    #[command(name = "find-path")]
-    FindPath {
+    #[command(name = "path-search")]
+    PathSearch {
         pattern: String,
 
         #[arg(short, long, default_value = "20")]
         max: usize,
     },
 
-    Search {
+    #[command(name = "text-search")]
+    TextSearch {
         query: String,
 
         #[arg(short, long, default_value = "20")]
@@ -92,13 +96,13 @@ enum Commands {
         path: String,
     },
 
-    #[command(name = "find-symbol")]
-    FindSymbol {
+    #[command(name = "symbol-defs")]
+    SymbolDefs {
         name: String,
     },
 
-    #[command(name = "find-word")]
-    FindWord {
+    #[command(name = "word-refs")]
+    WordRefs {
         word: String,
     },
 
@@ -118,8 +122,7 @@ enum Commands {
         limit: usize,
     },
 
-    #[command(name = "find-callers")]
-    FindCallers {
+    Callers {
         name: String,
 
         #[arg(short, long, default_value = "20")]
@@ -179,6 +182,22 @@ enum Commands {
         dry_run: bool,
     },
 
+    Create {
+        path: String,
+
+        #[arg(long)]
+        content: Option<String>,
+
+        #[arg(long)]
+        content_file: Option<PathBuf>,
+
+        #[arg(long)]
+        overwrite: bool,
+
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     Glob {
         pattern: String,
     },
@@ -220,10 +239,10 @@ fn main() -> Result<()> {
             ref path,
             ref output,
         } => cmd_index(path, output.as_ref(), &cli),
-        Commands::Map { ref path } => cmd_tree(path, &cli),
+        Commands::Files { ref path } => cmd_tree(path, &cli),
         Commands::List { ref path } => cmd_ls(path, &cli),
-        Commands::FindPath { ref pattern, max } => cmd_find(pattern, max, &cli),
-        Commands::Search {
+        Commands::PathSearch { ref pattern, max } => cmd_find(pattern, max, &cli),
+        Commands::TextSearch {
             ref query,
             max,
             regex,
@@ -244,15 +263,15 @@ fn main() -> Result<()> {
             &cli,
         ),
         Commands::Outline { ref path } => cmd_outline(path, &cli),
-        Commands::FindSymbol { ref name } => cmd_symbol(name, &cli),
-        Commands::FindWord { ref word } => cmd_word(word, &cli),
+        Commands::SymbolDefs { ref name } => cmd_symbol(name, &cli),
+        Commands::WordRefs { ref word } => cmd_word(word, &cli),
         Commands::Deps {
             ref path,
             reverse,
             transitive,
         } => cmd_deps(path, reverse, transitive, &cli),
         Commands::Recent { limit } => cmd_hot(limit, &cli),
-        Commands::FindCallers { ref name, max } => cmd_callers(name, max, &cli),
+        Commands::Callers { ref name, max } => cmd_callers(name, max, &cli),
         Commands::Brief { ref task, max } => cmd_context(task, max, &cli),
         Commands::Changes { since } => cmd_changes(since, &cli),
         Commands::Read {
@@ -286,6 +305,20 @@ fn main() -> Result<()> {
             content.as_deref(),
             content_file.as_ref(),
             if_hash.as_deref(),
+            dry_run,
+            &cli,
+        ),
+        Commands::Create {
+            ref path,
+            ref content,
+            ref content_file,
+            overwrite,
+            dry_run,
+        } => cmd_create(
+            path,
+            content.as_deref(),
+            content_file.as_ref(),
+            overwrite,
             dry_run,
             &cli,
         ),
@@ -456,8 +489,10 @@ fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Result<()> {
 
 fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
+    let root = std::env::current_dir()?;
+    let path = normalize_project_path(&root, path, PathMode::Existing)?;
 
-    match engine.get_outline(path) {
+    match engine.get_outline(&path) {
         Some(outline) => {
             if cli.json {
                 return print_json(json!({
@@ -677,17 +712,19 @@ fn cmd_tree(path: &str, cli: &Cli) -> Result<()> {
 
 fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
+    let root = std::env::current_dir()?;
+    let path = normalize_project_path(&root, path, PathMode::Existing)?;
 
     let deps = if transitive {
         if reverse {
-            engine.get_transitive_imported_by(path)
+            engine.get_transitive_imported_by(&path)
         } else {
-            engine.get_transitive_depends_on(path)
+            engine.get_transitive_depends_on(&path)
         }
     } else if reverse {
-        engine.get_imported_by(path)
+        engine.get_imported_by(&path)
     } else {
-        engine.get_depends_on(path)
+        engine.get_depends_on(&path)
     };
 
     let label = if reverse { "imported by" } else { "depends on" };
@@ -833,6 +870,8 @@ fn cmd_read(
     cli: &Cli,
 ) -> Result<()> {
     let engine = load_engine(cli);
+    let root = std::env::current_dir()?;
+    let path = normalize_project_path(&root, path, PathMode::Existing)?;
 
     let (line_start, line_end) = if let Some(range) = line_range {
         parse_line_range(range)?
@@ -840,7 +879,7 @@ fn cmd_read(
         (None, None)
     };
 
-    match engine.read_file_rich(path, line_start, line_end, compact, if_hash) {
+    match engine.read_file_rich(&path, line_start, line_end, compact, if_hash) {
         Some(result) => {
             if cli.json {
                 return print_json(json!({
@@ -885,6 +924,9 @@ fn cmd_edit(
     dry_run: bool,
     cli: &Cli,
 ) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let rel_path = normalize_project_path(&root, path, PathMode::Existing)?;
+    let abs_path = project_target_path(&root, &rel_path);
     let (range_start, range_end) = if let Some(range) = line_range {
         parse_line_range(range)?
     } else {
@@ -898,7 +940,7 @@ fn cmd_edit(
     };
 
     let request = edit::EditRequest {
-        path: PathBuf::from(path),
+        path: abs_path,
         op,
         range_start,
         range_end,
@@ -913,7 +955,7 @@ fn cmd_edit(
     if dry_run {
         if cli.json {
             return print_json(json!({
-                "path": path,
+                "path": rel_path,
                 "op": edit_op_str(op),
                 "dry_run": true,
                 "changed": result.changed,
@@ -931,12 +973,12 @@ fn cmd_edit(
 
     if result.changed {
         let mut engine = load_engine(cli);
-        engine.index_edited_file(path, &result.new_content, store_op(op));
+        engine.index_edited_file(&rel_path, &result.new_content, store_op(op));
         let snap_path = graph_path(cli);
         snapshot::write_snapshot(&engine, &snap_path)?;
         if cli.json {
             return print_json(json!({
-                "path": path,
+                "path": rel_path,
                 "op": edit_op_str(op),
                 "dry_run": false,
                 "changed": true,
@@ -954,7 +996,7 @@ fn cmd_edit(
     } else {
         if cli.json {
             return print_json(json!({
-                "path": path,
+                "path": rel_path,
                 "op": edit_op_str(op),
                 "dry_run": false,
                 "changed": false,
@@ -963,6 +1005,65 @@ fn cmd_edit(
             }));
         }
         println!("edit unchanged: hash:{:x}", result.new_hash);
+    }
+
+    Ok(())
+}
+
+fn cmd_create(
+    path: &str,
+    content: Option<&str>,
+    content_file: Option<&PathBuf>,
+    overwrite: bool,
+    dry_run: bool,
+    cli: &Cli,
+) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let rel_path = normalize_project_path(&root, path, PathMode::Create)?;
+    let abs_path = project_target_path(&root, &rel_path);
+    let content = if let Some(path) = content_file {
+        std::fs::read_to_string(path)?
+    } else {
+        content.unwrap_or("").to_string()
+    };
+
+    let request = edit::CreateRequest {
+        path: abs_path,
+        content: content.clone(),
+        overwrite,
+        dry_run,
+    };
+    let result = edit::create_file(&request)?;
+
+    if !dry_run {
+        let mut engine = load_engine(cli);
+        engine.index_edited_file(&rel_path, &content, store::Op::Create);
+        let snap_path = graph_path(cli);
+        snapshot::write_snapshot(&engine, &snap_path)?;
+    }
+
+    if cli.json {
+        return print_json(json!({
+            "path": rel_path,
+            "op": "create",
+            "dry_run": dry_run,
+            "changed": result.changed,
+            "hash": format!("{:x}", result.hash),
+            "line_count": result.line_count,
+            "byte_size": result.byte_size,
+        }));
+    }
+
+    if dry_run {
+        println!(
+            "create dry-run: {} lines, hash:{:x}",
+            result.line_count, result.hash
+        );
+    } else {
+        println!(
+            "file created: {} lines, hash:{:x}",
+            result.line_count, result.hash
+        );
     }
 
     Ok(())
@@ -1199,14 +1300,10 @@ fn parse_line_range(range: &str) -> Result<(Option<u32>, Option<u32>)> {
 fn cmd_query(pipeline: &[String], cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
     let pipeline_str = pipeline.join(" ");
-    let text = pipeline::run(&engine, &pipeline_str);
+    let output = pipeline::run_output(&engine, &pipeline_str);
+    let text = output.render();
     if cli.json {
-        return print_json(json!({
-            "pipeline": pipeline_str,
-            "text": text,
-            "structured": false,
-            "note": "Pipeline currently returns text because each stage can change result shape."
-        }));
+        return print_json(output.to_json(&pipeline_str));
     }
     println!("{}", text);
     Ok(())
@@ -1224,9 +1321,7 @@ fn rich_results_json(results: &[engine::RichSearchResult]) -> Vec<serde_json::Va
             json!({
                 "path": &result.path,
                 "line": result.line_num,
-                "line_num": result.line_num,
                 "text": &result.line_text,
-                "line_text": &result.line_text,
                 "scope": result.scope.as_ref().map(|scope| json!({
                     "name": &scope.name,
                     "kind": scope.kind.to_string(),
