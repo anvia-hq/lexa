@@ -69,6 +69,18 @@ From source:
 cargo install --path .
 ```
 
+Upgrade an installed release:
+
+```bash
+lexa upgrade
+lexa upgrade v0.1.0
+lexa upgrade --install-dir "$HOME/.local/bin"
+```
+
+`upgrade` updates the Lexa binary in the directory containing the currently
+running `lexa`, unless `--install-dir` or `LEXA_INSTALL_DIR` is set. To refresh a
+project's graph, run `lexa index .`.
+
 Or build without installing:
 
 ```bash
@@ -127,6 +139,7 @@ lexa --graph /tmp/project.graph.lexa text-search "Parser"
 | `changes [since]` | Show session-local changes |
 | `recent` | Show recently modified files |
 | `status` | Show index status |
+| `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Refresh graph on file changes |
 | `pipeline <pipeline>` | Chain query operations |
 | `mcp [path]` | Start MCP over stdio |
