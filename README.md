@@ -61,7 +61,7 @@ irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex
 Install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- v0.4.0
+curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- v0.4.1
 ```
 
 From source:
@@ -74,7 +74,7 @@ Upgrade an installed release:
 
 ```bash
 lexa upgrade
-lexa upgrade v0.4.0
+lexa upgrade v0.4.1
 lexa upgrade --install-dir "$HOME/.local/bin"
 ```
 
@@ -312,8 +312,8 @@ Linux x86_64, and Windows x86_64.
 To publish a GitHub Release with all binaries:
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.1
+git push origin v0.4.1
 ```
 
 Run the benchmark suite:
