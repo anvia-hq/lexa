@@ -2,7 +2,7 @@ pub mod audit;
 mod cache;
 pub mod edit;
 pub mod engine;
-mod glob;
+pub(crate) mod glob;
 mod index;
 pub mod mcp;
 mod parser;

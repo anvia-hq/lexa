@@ -192,14 +192,20 @@ enum Commands {
     Status,
 
     Audit {
-        #[arg(short, long, default_value = "100")]
-        max: usize,
+        #[arg(short, long)]
+        max: Option<usize>,
 
         #[arg(long)]
         since: Option<String>,
 
         #[arg(long)]
         strict: bool,
+
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        #[arg(long)]
+        no_config: bool,
     },
 
     #[command(
@@ -338,7 +344,16 @@ fn main() -> Result<()> {
             max,
             ref since,
             strict,
-        } => cmd_audit(max, since.as_deref(), strict, &cli),
+            ref config,
+            no_config,
+        } => cmd_audit(
+            max,
+            since.as_deref(),
+            strict,
+            config.as_ref(),
+            no_config,
+            &cli,
+        ),
         Commands::Upgrade {
             ref version,
             ref install_dir,
@@ -1220,10 +1235,18 @@ fn cmd_status(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_audit(max: usize, since: Option<&str>, strict: bool, cli: &Cli) -> Result<()> {
+fn cmd_audit(
+    max: Option<usize>,
+    since: Option<&str>,
+    strict: bool,
+    config_path: Option<&PathBuf>,
+    no_config: bool,
+    cli: &Cli,
+) -> Result<()> {
     let engine = load_engine(cli);
+    let root = std::env::current_dir()?;
+    let config = audit::load_audit_config(&root, config_path.map(PathBuf::as_path), no_config)?;
     let scope = if let Some(base) = since {
-        let root = std::env::current_dir()?;
         audit::AuditScope::GitSince {
             base: base.to_string(),
             changed_files: audit::changed_files_since(&root, base)?,
@@ -1234,8 +1257,9 @@ fn cmd_audit(max: usize, since: Option<&str>, strict: bool, cli: &Cli) -> Result
     let report = audit::run_audit(
         &engine,
         audit::AuditOptions {
-            max_results: max,
+            max_results: max.unwrap_or(0),
             scope,
+            config,
         },
     );
 

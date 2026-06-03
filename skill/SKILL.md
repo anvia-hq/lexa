@@ -233,10 +233,21 @@ lexa --json audit
 lexa audit --max 50
 lexa audit --since main
 lexa audit --since main --strict
+lexa audit --config lexa.toml
+lexa audit --no-config
 ```
 
 Use `--since <git-ref>` for review scope and `--strict` when the user wants a
 CI-style non-zero exit on high-severity findings.
+
+Audit config is optional. Lexa discovers `lexa.toml` or `.lexa/audit.toml`
+unless `--config` or `--no-config` is used. Dotted rule IDs must be quoted in
+TOML, for example:
+
+```toml
+[audit.rules]
+"file.large" = "off"
+```
 
 ## Verification
 

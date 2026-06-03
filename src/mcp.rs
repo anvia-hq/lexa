@@ -761,7 +761,13 @@ impl McpServer {
     fn tool_audit(&self, args: &Value) -> Result<ToolOutput> {
         let max_results = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
-            .unwrap_or(100);
+            .unwrap_or(0);
+        let config_path = opt_str(args, "config").map(PathBuf::from);
+        let config = audit::load_audit_config(
+            &self.root,
+            config_path.as_deref(),
+            opt_bool(args, "no_config").unwrap_or(false),
+        )?;
         let scope = if let Some(base) = opt_str(args, "since") {
             audit::AuditScope::GitSince {
                 base: base.to_string(),
@@ -770,7 +776,14 @@ impl McpServer {
         } else {
             audit::AuditScope::Project
         };
-        let report = audit::run_audit(&self.engine, AuditOptions { max_results, scope });
+        let report = audit::run_audit(
+            &self.engine,
+            AuditOptions {
+                max_results,
+                scope,
+                config,
+            },
+        );
         let text = audit::render_audit_report(&report);
         Ok(ToolOutput::new(text, json!(report)))
     }
@@ -1009,7 +1022,7 @@ fn tools() -> Value {
         tool(
             "audit",
             "Run a review-oriented architecture audit over the indexed project.",
-            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"}},"required":[]})
+            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string"},"no_config":{"type":"boolean"}},"required":[]})
         ),
         tool(
             "pipeline",

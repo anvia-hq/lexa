@@ -171,13 +171,43 @@ lexa --json audit
 lexa audit --max 50
 lexa audit --since main
 lexa audit --since main --strict
+lexa audit --config lexa.toml
+lexa audit --no-config
 ```
 
-`audit` is read-only. The first iteration flags import cycles, large files,
-large symbols, and dependency hotspots from the indexed graph. Use `--since` to
-scope findings to changed files and their direct dependency context. Use
-`--strict` to return a non-zero exit code when high-severity findings are
-present.
+`audit` is read-only. It flags import cycles, large files, large symbols, and
+dependency hotspots from the indexed graph. Use `--since` to scope findings to
+changed files and their direct dependency context. Use `--strict` to return a
+non-zero exit code when high-severity findings are present. Config is optional;
+Lexa discovers `lexa.toml` or `.lexa/audit.toml` unless `--config` or
+`--no-config` is used.
+
+Minimal audit config:
+
+```toml
+[audit]
+max_findings = 100
+
+[audit.thresholds]
+large_file_warning = 800
+large_file_high = 1500
+large_symbol_warning = 120
+large_symbol_high = 250
+fan_in_warning = 15
+fan_in_high = 40
+fan_out_warning = 20
+fan_out_high = 50
+
+[audit.rules]
+"architecture.cycle" = "high"
+"file.large" = "warning"
+"symbol.large" = "warning"
+"dependency.hotspot" = "warning"
+
+[audit.ignore]
+paths = ["target/**", "vendor/**"]
+findings = ["dependency.hotspot:src/main.rs"]
+```
 
 ## MCP
 

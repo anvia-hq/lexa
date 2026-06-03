@@ -1,9 +1,11 @@
 use crate::engine::Engine;
+use crate::glob::match_glob;
 use crate::types::{Symbol, SymbolKind};
-use anyhow::{bail, Result};
-use hashbrown::{HashMap, HashSet};
-use serde::Serialize;
-use std::path::Path;
+use anyhow::{bail, Context, Result};
+use hashbrown::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_MAX_FINDINGS: usize = 100;
 const LARGE_FILE_WARNING_LINES: u32 = 800;
@@ -21,6 +23,7 @@ const MAX_INTERNAL_CYCLES: usize = 1000;
 pub struct AuditOptions {
     pub max_results: usize,
     pub scope: AuditScope,
+    pub config: AuditConfig,
 }
 
 impl Default for AuditOptions {
@@ -28,8 +31,88 @@ impl Default for AuditOptions {
         Self {
             max_results: DEFAULT_MAX_FINDINGS,
             scope: AuditScope::Project,
+            config: AuditConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditConfig {
+    pub max_findings: usize,
+    pub thresholds: AuditThresholds,
+    pub rules: AuditRules,
+    pub ignore: AuditIgnore,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            max_findings: DEFAULT_MAX_FINDINGS,
+            thresholds: AuditThresholds::default(),
+            rules: AuditRules::default(),
+            ignore: AuditIgnore::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditThresholds {
+    pub large_file_warning: u32,
+    pub large_file_high: u32,
+    pub large_symbol_warning: u32,
+    pub large_symbol_high: u32,
+    pub fan_in_warning: usize,
+    pub fan_in_high: usize,
+    pub fan_out_warning: usize,
+    pub fan_out_high: usize,
+}
+
+impl Default for AuditThresholds {
+    fn default() -> Self {
+        Self {
+            large_file_warning: LARGE_FILE_WARNING_LINES,
+            large_file_high: LARGE_FILE_HIGH_LINES,
+            large_symbol_warning: LARGE_SYMBOL_WARNING_LINES,
+            large_symbol_high: LARGE_SYMBOL_HIGH_LINES,
+            fan_in_warning: HOTSPOT_FAN_IN_WARNING,
+            fan_in_high: HOTSPOT_FAN_IN_HIGH,
+            fan_out_warning: HOTSPOT_FAN_OUT_WARNING,
+            fan_out_high: HOTSPOT_FAN_OUT_HIGH,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditRules {
+    pub architecture_cycle: RuleSetting,
+    pub file_large: RuleSetting,
+    pub symbol_large: RuleSetting,
+    pub dependency_hotspot: RuleSetting,
+}
+
+impl Default for AuditRules {
+    fn default() -> Self {
+        Self {
+            architecture_cycle: RuleSetting::High,
+            file_large: RuleSetting::Warning,
+            symbol_large: RuleSetting::Warning,
+            dependency_hotspot: RuleSetting::Warning,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuditIgnore {
+    pub paths: Vec<String>,
+    pub findings: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSetting {
+    Off,
+    Warning,
+    High,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -112,20 +195,174 @@ pub struct AuditReport {
     pub findings: Vec<AuditFinding>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditConfigFile {
+    #[serde(default)]
+    audit: AuditConfigSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditConfigSection {
+    max_findings: Option<usize>,
+    #[serde(default)]
+    thresholds: AuditThresholdSection,
+    #[serde(default)]
+    rules: HashMap<String, RuleSetting>,
+    #[serde(default)]
+    ignore: AuditIgnoreSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditThresholdSection {
+    large_file_warning: Option<u32>,
+    large_file_high: Option<u32>,
+    large_symbol_warning: Option<u32>,
+    large_symbol_high: Option<u32>,
+    fan_in_warning: Option<usize>,
+    fan_in_high: Option<usize>,
+    fan_out_warning: Option<usize>,
+    fan_out_high: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditIgnoreSection {
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(default)]
+    findings: Vec<String>,
+}
+
+pub fn load_audit_config(
+    root: &Path,
+    explicit_path: Option<&Path>,
+    no_config: bool,
+) -> Result<AuditConfig> {
+    if no_config {
+        return Ok(AuditConfig::default());
+    }
+
+    let Some(path) = find_audit_config_path(root, explicit_path) else {
+        return Ok(AuditConfig::default());
+    };
+
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read audit config {}", path.display()))?;
+    let file = toml::from_str::<AuditConfigFile>(&content)
+        .with_context(|| format!("failed to parse audit config {}", path.display()))?;
+    AuditConfig::from_file(file)
+}
+
+fn find_audit_config_path(root: &Path, explicit_path: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = explicit_path {
+        return Some(if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            root.join(path)
+        });
+    }
+
+    let candidates = [root.join("lexa.toml"), root.join(".lexa/audit.toml")];
+    candidates.into_iter().find(|path| path.exists())
+}
+
+impl AuditConfig {
+    fn from_file(file: AuditConfigFile) -> Result<Self> {
+        let mut config = Self::default();
+        let audit = file.audit;
+
+        if let Some(max_findings) = audit.max_findings {
+            config.max_findings = max_findings;
+        }
+
+        config.thresholds.apply(audit.thresholds)?;
+        config.rules.apply(audit.rules)?;
+        config.ignore.paths = audit.ignore.paths;
+        config.ignore.findings = audit.ignore.findings.into_iter().collect();
+
+        Ok(config)
+    }
+}
+
+impl AuditThresholds {
+    fn apply(&mut self, section: AuditThresholdSection) -> Result<()> {
+        if let Some(value) = section.large_file_warning {
+            self.large_file_warning = value;
+        }
+        if let Some(value) = section.large_file_high {
+            self.large_file_high = value;
+        }
+        if let Some(value) = section.large_symbol_warning {
+            self.large_symbol_warning = value;
+        }
+        if let Some(value) = section.large_symbol_high {
+            self.large_symbol_high = value;
+        }
+        if let Some(value) = section.fan_in_warning {
+            self.fan_in_warning = value;
+        }
+        if let Some(value) = section.fan_in_high {
+            self.fan_in_high = value;
+        }
+        if let Some(value) = section.fan_out_warning {
+            self.fan_out_warning = value;
+        }
+        if let Some(value) = section.fan_out_high {
+            self.fan_out_high = value;
+        }
+        self.validate()
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.large_file_warning > self.large_file_high {
+            bail!("large_file_warning must be <= large_file_high");
+        }
+        if self.large_symbol_warning > self.large_symbol_high {
+            bail!("large_symbol_warning must be <= large_symbol_high");
+        }
+        if self.fan_in_warning > self.fan_in_high {
+            bail!("fan_in_warning must be <= fan_in_high");
+        }
+        if self.fan_out_warning > self.fan_out_high {
+            bail!("fan_out_warning must be <= fan_out_high");
+        }
+        Ok(())
+    }
+}
+
+impl AuditRules {
+    fn apply(&mut self, rules: HashMap<String, RuleSetting>) -> Result<()> {
+        for (rule, setting) in rules {
+            match rule.as_str() {
+                "architecture.cycle" => self.architecture_cycle = setting,
+                "file.large" => self.file_large = setting,
+                "symbol.large" => self.symbol_large = setting,
+                "dependency.hotspot" => self.dependency_hotspot = setting,
+                _ => bail!("unknown audit rule '{rule}'"),
+            }
+        }
+        Ok(())
+    }
+}
+
 pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {
     let max_results = if options.max_results == 0 {
-        DEFAULT_MAX_FINDINGS
+        options.config.max_findings
     } else {
         options.max_results
     };
     let mut findings = Vec::new();
 
-    audit_cycles(engine, &mut findings);
-    audit_large_files(engine, &mut findings);
-    audit_large_symbols(engine, &mut findings);
-    audit_dependency_hotspots(engine, &mut findings);
+    audit_cycles(engine, &options.config, &mut findings);
+    audit_large_files(engine, &options.config, &mut findings);
+    audit_large_symbols(engine, &options.config, &mut findings);
+    audit_dependency_hotspots(engine, &options.config, &mut findings);
 
     findings = filter_findings_by_scope(engine, findings, &options.scope);
+    findings = filter_ignored_findings(findings, &options.config.ignore);
 
     findings.sort_by(|a, b| {
         b.severity
@@ -265,7 +502,15 @@ fn normalize_git_changed_path(path: &str, prefix: &str) -> Option<String> {
     path.strip_prefix(prefix).map(ToString::to_string)
 }
 
-fn audit_cycles(engine: &Engine, findings: &mut Vec<AuditFinding>) {
+fn audit_cycles(engine: &Engine, config: &AuditConfig, findings: &mut Vec<AuditFinding>) {
+    let Some(severity) = config
+        .rules
+        .architecture_cycle
+        .finding_severity(AuditSeverity::High)
+    else {
+        return;
+    };
+
     let cycles = find_cycles(engine);
     for cycle in cycles {
         let Some(path) = cycle.first().cloned() else {
@@ -274,7 +519,7 @@ fn audit_cycles(engine: &Engine, findings: &mut Vec<AuditFinding>) {
         findings.push(AuditFinding {
             id: format!("architecture.cycle:{path}"),
             rule: "architecture.cycle".to_string(),
-            severity: AuditSeverity::High,
+            severity,
             title: "Import cycle detected".to_string(),
             path,
             line_start: None,
@@ -289,13 +534,16 @@ fn audit_cycles(engine: &Engine, findings: &mut Vec<AuditFinding>) {
     }
 }
 
-fn audit_large_files(engine: &Engine, findings: &mut Vec<AuditFinding>) {
+fn audit_large_files(engine: &Engine, config: &AuditConfig, findings: &mut Vec<AuditFinding>) {
     for (path, meta) in engine.file_map() {
-        let severity = if meta.line_count >= LARGE_FILE_HIGH_LINES {
+        let base_severity = if meta.line_count >= config.thresholds.large_file_high {
             AuditSeverity::High
-        } else if meta.line_count >= LARGE_FILE_WARNING_LINES {
+        } else if meta.line_count >= config.thresholds.large_file_warning {
             AuditSeverity::Warning
         } else {
+            continue;
+        };
+        let Some(severity) = config.rules.file_large.finding_severity(base_severity) else {
             continue;
         };
 
@@ -316,7 +564,7 @@ fn audit_large_files(engine: &Engine, findings: &mut Vec<AuditFinding>) {
     }
 }
 
-fn audit_large_symbols(engine: &Engine, findings: &mut Vec<AuditFinding>) {
+fn audit_large_symbols(engine: &Engine, config: &AuditConfig, findings: &mut Vec<AuditFinding>) {
     for (path, _) in engine.file_map() {
         let Some(outline) = engine.get_outline(&path) else {
             continue;
@@ -327,11 +575,14 @@ fn audit_large_symbols(engine: &Engine, findings: &mut Vec<AuditFinding>) {
             }
 
             let span = symbol.line_end.saturating_sub(symbol.line_start) + 1;
-            let severity = if span >= LARGE_SYMBOL_HIGH_LINES {
+            let base_severity = if span >= config.thresholds.large_symbol_high {
                 AuditSeverity::High
-            } else if span >= LARGE_SYMBOL_WARNING_LINES {
+            } else if span >= config.thresholds.large_symbol_warning {
                 AuditSeverity::Warning
             } else {
+                continue;
+            };
+            let Some(severity) = config.rules.symbol_large.finding_severity(base_severity) else {
                 continue;
             };
 
@@ -354,12 +605,22 @@ fn audit_large_symbols(engine: &Engine, findings: &mut Vec<AuditFinding>) {
     }
 }
 
-fn audit_dependency_hotspots(engine: &Engine, findings: &mut Vec<AuditFinding>) {
+fn audit_dependency_hotspots(
+    engine: &Engine,
+    config: &AuditConfig,
+    findings: &mut Vec<AuditFinding>,
+) {
     for (path, _) in engine.file_map() {
         let fan_in = engine.get_imported_by(&path).len();
         let fan_out = engine.get_depends_on(&path).len();
-        let severity = hotspot_severity(fan_in, fan_out);
-        let Some(severity) = severity else {
+        let Some(base_severity) = hotspot_severity(fan_in, fan_out, &config.thresholds) else {
+            continue;
+        };
+        let Some(severity) = config
+            .rules
+            .dependency_hotspot
+            .finding_severity(base_severity)
+        else {
             continue;
         };
 
@@ -381,13 +642,27 @@ fn audit_dependency_hotspots(engine: &Engine, findings: &mut Vec<AuditFinding>) 
     }
 }
 
-fn hotspot_severity(fan_in: usize, fan_out: usize) -> Option<AuditSeverity> {
-    if fan_in >= HOTSPOT_FAN_IN_HIGH || fan_out >= HOTSPOT_FAN_OUT_HIGH {
+fn hotspot_severity(
+    fan_in: usize,
+    fan_out: usize,
+    thresholds: &AuditThresholds,
+) -> Option<AuditSeverity> {
+    if fan_in >= thresholds.fan_in_high || fan_out >= thresholds.fan_out_high {
         Some(AuditSeverity::High)
-    } else if fan_in >= HOTSPOT_FAN_IN_WARNING || fan_out >= HOTSPOT_FAN_OUT_WARNING {
+    } else if fan_in >= thresholds.fan_in_warning || fan_out >= thresholds.fan_out_warning {
         Some(AuditSeverity::Warning)
     } else {
         None
+    }
+}
+
+impl RuleSetting {
+    fn finding_severity(self, base: AuditSeverity) -> Option<AuditSeverity> {
+        match self {
+            Self::Off => None,
+            Self::Warning => Some(base),
+            Self::High => Some(AuditSeverity::High),
+        }
     }
 }
 
@@ -407,6 +682,19 @@ fn filter_findings_by_scope(
     findings
         .into_iter()
         .filter(|finding| is_finding_scope_relevant(engine, finding, &changed))
+        .collect()
+}
+
+fn filter_ignored_findings(findings: Vec<AuditFinding>, ignore: &AuditIgnore) -> Vec<AuditFinding> {
+    findings
+        .into_iter()
+        .filter(|finding| !ignore.findings.contains(&finding.id))
+        .filter(|finding| {
+            !ignore
+                .paths
+                .iter()
+                .any(|pattern| match_glob(pattern, &finding.path))
+        })
         .collect()
 }
 
@@ -576,6 +864,7 @@ mod tests {
                     base: "main".to_string(),
                     changed_files: vec!["src/large.rs".to_string()],
                 },
+                config: AuditConfig::default(),
             },
         );
 
@@ -602,6 +891,7 @@ mod tests {
                     base: "main".to_string(),
                     changed_files: vec!["src/user_0.rs".to_string()],
                 },
+                config: AuditConfig::default(),
             },
         );
 
@@ -671,11 +961,139 @@ mod tests {
             AuditOptions {
                 max_results: 2,
                 scope: AuditScope::Project,
+                config: AuditConfig::default(),
             },
         );
 
         assert_eq!(report.summary.total_findings, 3);
         assert_eq!(report.summary.returned_findings, 2);
         assert!(report.summary.truncated);
+    }
+
+    #[test]
+    fn audit_config_thresholds_override_defaults() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/small.rs", "one\ntwo\nthree\n");
+        let mut config = AuditConfig::default();
+        config.thresholds.large_file_warning = 3;
+        config.thresholds.large_file_high = 10;
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: 100,
+                scope: AuditScope::Project,
+                config,
+            },
+        );
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.rule == "file.large"));
+    }
+
+    #[test]
+    fn audit_config_can_disable_rules() {
+        let mut engine = Engine::new(4);
+        let content = "line\n".repeat(LARGE_FILE_WARNING_LINES as usize);
+        engine.index_file("src/large.rs", &content);
+        let mut config = AuditConfig::default();
+        config.rules.file_large = RuleSetting::Off;
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: 100,
+                scope: AuditScope::Project,
+                config,
+            },
+        );
+
+        assert!(!report
+            .findings
+            .iter()
+            .any(|finding| finding.rule == "file.large"));
+    }
+
+    #[test]
+    fn audit_config_ignores_findings_and_paths() {
+        let mut engine = Engine::new(4);
+        let content = "line\n".repeat(LARGE_FILE_WARNING_LINES as usize);
+        engine.index_file("src/large.rs", &content);
+        engine.index_file("vendor/large.rs", &content);
+        let mut config = AuditConfig::default();
+        config
+            .ignore
+            .findings
+            .insert("file.large:src/large.rs".to_string());
+        config.ignore.paths.push("vendor/**".to_string());
+
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: 100,
+                scope: AuditScope::Project,
+                config,
+            },
+        );
+
+        assert_eq!(report.summary.total_findings, 0);
+    }
+
+    #[test]
+    fn audit_config_parses_quoted_rule_ids() {
+        let parsed = toml::from_str::<AuditConfigFile>(
+            r#"
+            [audit]
+            max_findings = 12
+
+            [audit.thresholds]
+            large_file_warning = 10
+
+            [audit.rules]
+            "file.large" = "off"
+
+            [audit.ignore]
+            paths = ["vendor/**"]
+            findings = ["dependency.hotspot:src/main.rs"]
+            "#,
+        )
+        .unwrap();
+        let config = AuditConfig::from_file(parsed).unwrap();
+
+        assert_eq!(config.max_findings, 12);
+        assert_eq!(config.thresholds.large_file_warning, 10);
+        assert_eq!(config.rules.file_large, RuleSetting::Off);
+        assert_eq!(config.ignore.paths, vec!["vendor/**"]);
+        assert!(config
+            .ignore
+            .findings
+            .contains("dependency.hotspot:src/main.rs"));
+    }
+
+    #[test]
+    fn audit_config_rejects_unknown_keys() {
+        let parsed = toml::from_str::<AuditConfigFile>(
+            r#"
+            [audit]
+            unexpected = true
+            "#,
+        );
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn audit_config_rejects_unknown_rules() {
+        let parsed = toml::from_str::<AuditConfigFile>(
+            r#"
+            [audit.rules]
+            "unknown.rule" = "warning"
+            "#,
+        )
+        .unwrap();
+
+        assert!(AuditConfig::from_file(parsed).is_err());
     }
 }
