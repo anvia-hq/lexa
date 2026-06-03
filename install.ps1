@@ -51,6 +51,12 @@ try {
 
     $binary = Join-Path $extractDir "lexa-windows-x86_64-$assetVersion\lexa.exe"
     if (-not (Test-Path $binary)) {
+        $binaryCandidates = @(Get-ChildItem -Path $extractDir -Recurse -Filter "lexa.exe" -File)
+        if ($binaryCandidates.Count -eq 1) {
+            $binary = $binaryCandidates[0].FullName
+        }
+    }
+    if (-not (Test-Path $binary)) {
         throw "Archive did not contain expected binary: lexa.exe"
     }
 
