@@ -59,6 +59,12 @@ pub struct WalkedFile {
     pub modified_ms: u64,
 }
 
+pub struct WalkedFileMeta {
+    pub path: String,
+    pub modified_ms: u64,
+    pub byte_size: u64,
+}
+
 pub fn walk_project(root: impl AsRef<Path>) -> Vec<WalkedFile> {
     let mut files = Vec::new();
     let root = root.as_ref();
@@ -83,60 +89,119 @@ pub fn walk_project(root: impl AsRef<Path>) -> Vec<WalkedFile> {
         }
 
         let path = entry.path();
-
-        if should_skip_path(path) {
+        let Some(meta) = walked_file_meta(root, path) else {
             continue;
-        }
-
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if SKIP_FILES.contains(&name) {
-                continue;
-            }
-        }
-
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-
-        let language = detect_language(&relative);
-        if language == Language::Unknown {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let ext_lower = ext.to_lowercase();
-                if is_binary_extension(&ext_lower) {
-                    continue;
-                }
-            }
-        }
-
-        let modified_ms = if let Ok(metadata) = entry.metadata() {
-            if metadata.len() > MAX_FILE_SIZE {
-                continue;
-            }
-            metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or_default()
-        } else {
-            0
         };
-
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
         files.push(WalkedFile {
-            path: relative,
+            path: meta.path,
             content,
-            modified_ms,
+            modified_ms: meta.modified_ms,
         });
     }
 
     files
+}
+
+pub fn walk_project_meta(root: impl AsRef<Path>) -> Vec<WalkedFileMeta> {
+    let mut files = Vec::new();
+    let root = root.as_ref();
+
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .follow_links(false)
+        .same_file_system(true);
+
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if entry.file_type().is_none_or(|ft| ft.is_dir()) {
+            continue;
+        }
+
+        if let Some(meta) = walked_file_meta(root, entry.path()) {
+            files.push(meta);
+        }
+    }
+
+    files
+}
+
+pub fn walk_single_file(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<WalkedFile> {
+    let root = root.as_ref();
+    let path = path.as_ref();
+    let meta = walked_file_meta(root, path)?;
+    let content = std::fs::read_to_string(path).ok()?;
+    Some(WalkedFile {
+        path: meta.path,
+        content,
+        modified_ms: meta.modified_ms,
+    })
+}
+
+pub fn relative_path(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<String> {
+    let root = root.as_ref();
+    let path = path.as_ref();
+    path.strip_prefix(root)
+        .ok()
+        .map(|relative| relative.to_string_lossy().to_string())
+}
+
+fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
+    if should_skip_path(path) {
+        return None;
+    }
+
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if SKIP_FILES.contains(&name) {
+            return None;
+        }
+    }
+
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+
+    let language = detect_language(&relative);
+    if language == Language::Unknown {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let ext_lower = ext.to_lowercase();
+            if is_binary_extension(&ext_lower) {
+                return None;
+            }
+        }
+    }
+
+    let metadata = path.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_FILE_SIZE {
+        return None;
+    }
+
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+
+    Some(WalkedFileMeta {
+        path: relative,
+        modified_ms,
+        byte_size: metadata.len(),
+    })
 }
 
 fn should_skip_path(path: &Path) -> bool {

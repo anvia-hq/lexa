@@ -1,11 +1,15 @@
 use anyhow::{bail, Context, Result};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::time::Duration;
 
 use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
 use crate::engine::{Engine, SearchOptions};
+use crate::freshness;
 use crate::project_path::{normalize_project_path, project_target_path, PathMode};
 use crate::snapshot;
 use crate::store;
@@ -17,6 +21,12 @@ pub struct McpServer {
     root: PathBuf,
     graph_path: PathBuf,
     persist_graph: bool,
+    watcher: Option<RuntimeWatcher>,
+}
+
+struct RuntimeWatcher {
+    _watcher: RecommendedWatcher,
+    rx: Receiver<notify::Result<Event>>,
 }
 
 struct ToolOutput {
@@ -48,7 +58,23 @@ impl McpServer {
             root,
             graph_path,
             persist_graph,
+            watcher: None,
         }
+    }
+
+    pub fn enable_watcher(&mut self, debounce_ms: u64) -> Result<()> {
+        let (tx, rx) = channel();
+        let mut watcher = RecommendedWatcher::new(
+            tx,
+            notify::Config::default().with_poll_interval(Duration::from_millis(debounce_ms)),
+        )?;
+        watcher.watch(&self.root, RecursiveMode::Recursive)?;
+        eprintln!("Watching {} for MCP graph freshness", self.root.display());
+        self.watcher = Some(RuntimeWatcher {
+            _watcher: watcher,
+            rx,
+        });
+        Ok(())
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -70,6 +96,8 @@ impl McpServer {
                 }
             };
 
+            self.refresh_from_watcher()?;
+
             let id = request.get("id").cloned();
             let Some(method) = request.get("method").and_then(Value::as_str) else {
                 if id.is_some() {
@@ -86,6 +114,46 @@ impl McpServer {
                 continue;
             };
             write_response(&mut writer, message.framing, &response)?;
+        }
+
+        Ok(())
+    }
+
+    fn refresh_from_watcher(&mut self) -> Result<()> {
+        let Some(watcher) = &self.watcher else {
+            return Ok(());
+        };
+
+        let mut paths = Vec::new();
+        loop {
+            match watcher.rx.try_recv() {
+                Ok(Ok(event)) => {
+                    if matches!(
+                        event.kind,
+                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                    ) {
+                        paths.extend(event.paths);
+                    }
+                }
+                Ok(Err(err)) => eprintln!("Watch error: {err}"),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let summary = freshness::refresh_paths(&mut self.engine, &self.root, paths)?;
+        if summary.changed() {
+            if self.persist_graph {
+                snapshot::write_snapshot(&self.engine, &self.graph_path)?;
+            }
+            eprintln!(
+                "MCP graph refreshed: {} indexed, {} removed",
+                summary.indexed, summary.removed
+            );
         }
 
         Ok(())
