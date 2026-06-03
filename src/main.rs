@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use lexa::engine::{self, SearchOptions};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
-use lexa::{edit, mcp, pipeline, snapshot, store};
+use lexa::{audit, edit, mcp, pipeline, snapshot, store};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -191,6 +191,11 @@ enum Commands {
 
     Status,
 
+    Audit {
+        #[arg(short, long, default_value = "100")]
+        max: usize,
+    },
+
     #[command(
         alias = "update",
         about = "Upgrade the Lexa binary, not the project index"
@@ -323,6 +328,7 @@ fn main() -> Result<()> {
         ),
         Commands::Glob { ref pattern } => cmd_glob(pattern, &cli),
         Commands::Status => cmd_status(&cli),
+        Commands::Audit { max } => cmd_audit(max, &cli),
         Commands::Upgrade {
             ref version,
             ref install_dir,
@@ -1201,6 +1207,18 @@ fn cmd_status(cli: &Cli) -> Result<()> {
         println!("  Graph: not found");
     }
 
+    Ok(())
+}
+
+fn cmd_audit(max: usize, cli: &Cli) -> Result<()> {
+    let engine = load_engine(cli);
+    let report = audit::run_audit(&engine, audit::AuditOptions { max_results: max });
+
+    if cli.json {
+        return print_json(json!(report));
+    }
+
+    print!("{}", audit::render_audit_report(&report));
     Ok(())
 }
 

@@ -62,6 +62,7 @@ lexa outline <path>
 lexa text-search "<query>" --scope
 lexa symbol-defs <name>
 lexa trace-deps <path>
+lexa audit
 ```
 
 Prefer Lexa over repeated filesystem scans when the question is about indexed files, symbols, imports, or recurring text search. Use `rg` directly when the user needs raw repository text search, unindexed generated files, or exact grep-style behavior.
@@ -90,6 +91,7 @@ All CLI commands:
 | `create <path>` | Create a file safely |
 | `glob <pattern>` | Match indexed paths with a glob |
 | `status` | Show index status |
+| `audit` | Run a review-oriented architecture audit |
 | `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Watch files and refresh the graph |
 | `pipeline <pipeline>` | Run composable query stages |
@@ -216,7 +218,20 @@ MCP tools exposed by Lexa:
 | `changes` | Changed files since sequence |
 | `recent` | Recently modified files |
 | `status` | Index status |
+| `audit` | Review-oriented architecture audit |
 | `pipeline` | Composable query pipeline |
+
+## Audit Workflow
+
+Use `lexa audit` when the user wants a static analysis pass, architecture review,
+or agent-friendly risk summary. The audit is read-only and reports import cycles,
+large files, large symbols, and dependency hotspots from the indexed graph.
+
+```bash
+lexa audit
+lexa --json audit
+lexa audit --max 50
+```
 
 ## Verification
 

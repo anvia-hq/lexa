@@ -21,6 +21,7 @@ atomic line-based patches.
 lexa index .
 lexa text-search "handle_request" --scope
 lexa outline src/main.rs
+lexa audit
 lexa mcp .
 ```
 
@@ -139,6 +140,7 @@ lexa --graph /tmp/project.graph.lexa text-search "Parser"
 | `changes [since]` | Show session-local changes |
 | `recent` | Show recently modified files |
 | `status` | Show index status |
+| `audit` | Run a review-oriented architecture audit |
 | `upgrade [version]` | Upgrade the Lexa binary, not a project index |
 | `watch [path]` | Refresh graph on file changes |
 | `pipeline <pipeline>` | Chain query operations |
@@ -160,6 +162,17 @@ lexa read src/main.rs --hash
 lexa patch src/main.rs replace -L 12 --if-hash <hash> --content '    println!("updated");'
 lexa create src/new_file.rs --content 'pub fn new_file() {}'
 ```
+
+Audit a project for structural review risks:
+
+```bash
+lexa audit
+lexa --json audit
+lexa audit --max 50
+```
+
+`audit` is read-only. The first iteration flags import cycles, large files,
+large symbols, and dependency hotspots from the indexed graph.
 
 ## MCP
 

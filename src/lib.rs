@@ -1,3 +1,4 @@
+pub mod audit;
 mod cache;
 pub mod edit;
 pub mod engine;

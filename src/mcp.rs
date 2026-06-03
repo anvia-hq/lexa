@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
 use crate::engine::{Engine, SearchOptions};
 use crate::project_path::{normalize_project_path, project_target_path, PathMode};
@@ -153,6 +154,7 @@ impl McpServer {
             "changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
             "recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
             "status" => Ok(self.tool_status()),
+            "audit" => Ok(self.tool_audit(args)),
             "pipeline" => self.tool_pipeline(args),
             _ => bail!("unknown tool: {name}"),
         }
@@ -756,6 +758,15 @@ impl McpServer {
         )
     }
 
+    fn tool_audit(&self, args: &Value) -> ToolOutput {
+        let max_results = opt_usize(args, "max_results")
+            .or_else(|| opt_usize(args, "max"))
+            .unwrap_or(100);
+        let report = audit::run_audit(&self.engine, AuditOptions { max_results });
+        let text = audit::render_audit_report(&report);
+        ToolOutput::new(text, json!(report))
+    }
+
     fn tool_pipeline(&self, args: &Value) -> Result<ToolOutput> {
         let pipeline =
             if let Some(text) = opt_str(args, "query").or_else(|| opt_str(args, "pipeline")) {
@@ -988,6 +999,11 @@ fn tools() -> Value {
             json!({"type":"object","properties":{},"required":[]})
         ),
         tool(
+            "audit",
+            "Run a review-oriented architecture audit over the indexed project.",
+            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":[]})
+        ),
+        tool(
             "pipeline",
             "Run a composable pipeline string such as 'glob src/**/*.rs | search main | limit 5'.",
             json!({"type":"object","properties":{"pipeline":{"type":"string"},"query":{"type":"string"},"steps":{"type":"array","items":{"type":"string"}}},"required":[]})
@@ -1206,6 +1222,7 @@ mod tests {
         assert!(names.contains(&"text_search"));
         assert!(names.contains(&"callers"));
         assert!(names.contains(&"create"));
+        assert!(names.contains(&"audit"));
         assert!(names.iter().all(|name| !name.starts_with("lexa_")));
         assert!(!names.contains(&"lexa_map"));
         assert!(!names.contains(&"lexa_find_path"));
