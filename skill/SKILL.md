@@ -227,6 +227,11 @@ Use `lexa audit` when the user wants a static analysis pass, architecture review
 or agent-friendly risk summary. The audit is read-only and reports import cycles,
 large files, large symbols, and dependency hotspots from the indexed graph.
 
+Lexa audit is not a compiler, typechecker, linter, test runner, or build
+verifier. A clean audit never means the project compiles. Do not use
+`audit:high=0`, `verdict: pass`, or "No audit findings" as a completion
+criterion for implementation work.
+
 ```bash
 lexa audit
 lexa --json audit
@@ -239,7 +244,7 @@ lexa audit --include dead-code
 ```
 
 Use `--since <git-ref>` for review scope and `--strict` when the user wants a
-CI-style non-zero exit on high-severity findings.
+CI-style non-zero exit on high-severity structural findings.
 Use `--include dead-code` only when the user explicitly wants unused-code
 candidates; treat those findings as candidates, not removal instructions.
 Audit findings include `actionability` and `next_steps`. Treat `actionable` as a
@@ -278,7 +283,10 @@ entrypoint_globs = ["src/main.*", "src/bin/**"]
 
 ## Verification
 
-After indexing or editing, run the relevant project checks. For Rust projects, default to:
+After any Lexa `patch` or `create` that changes source code, run the relevant
+project checks before claiming the work is complete. Prefer the repository's own
+scripts and metadata (`package.json`, `Cargo.toml`, `pyproject.toml`, etc.).
+For Rust projects, default to:
 
 ```bash
 cargo fmt -- --check
@@ -286,11 +294,20 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-For other stacks, inspect the project scripts or package metadata and choose the local lint/test commands already used by the repository.
+For JavaScript and TypeScript projects, inspect `package.json` and run the local
+typecheck, lint, test, or build scripts that represent the project's normal
+verification gate. If the right command is unavailable or fails for unrelated
+environment reasons, report that explicitly instead of treating Lexa audit as a
+substitute.
 
 ## Output Discipline
 
 - Cite paths and line ranges from Lexa results when explaining findings.
 - Keep searches scoped with `--path-glob`, `--max`, or focused queries when possible.
+- Use `--regex` or `regex:true` when a `text-search` query contains regex
+  syntax such as alternation, grouping, anchors, or character classes.
+- For range-sensitive edits, use patch dry-run first. After each successful
+  hash-guarded patch, use the returned hash or reread the file before another
+  hash-guarded patch; do not reuse stale `if_hash` values.
 - Re-index after substantial file edits if later Lexa queries must reflect the new state.
 - Mention when a result comes from the graph and may be stale because the project has not been re-indexed.

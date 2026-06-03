@@ -177,10 +177,13 @@ lexa audit --include dead-code
 ```
 
 `audit` is read-only. It flags import cycles, large files, large symbols, and
-dependency hotspots from the indexed graph. Use `--since` to scope findings to
+dependency hotspots from the indexed graph. It is not a compiler, typechecker,
+linter, test runner, or build verifier. A clean Lexa audit never means the
+project compiles; run the repository's normal verification command before
+claiming implementation work is complete. Use `--since` to scope findings to
 changed files and their direct dependency context. Use `--strict` to return a
-non-zero exit code when high-severity findings are present. Config is optional;
-Lexa discovers `lexa.toml` or `.lexa/audit.toml` unless `--config` or
+non-zero exit code when high-severity structural findings are present. Config is
+optional; Lexa discovers `lexa.toml` or `.lexa/audit.toml` unless `--config` or
 `--no-config` is used. Dead-code candidates are read-only and off by default;
 enable them with `--include dead-code` or config. Generated artifacts are
 ignored by default across common languages and frameworks, including generated

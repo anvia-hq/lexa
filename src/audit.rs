@@ -18,6 +18,9 @@ use hashbrown::HashMap;
 
 use rules::{collect_findings, filter_findings_by_scope, filter_ignored_findings};
 
+const AUDIT_VERIFICATION_NOTE: &str =
+    "Lexa audit is structural only; build, typecheck, lint, and tests were not run.";
+
 #[derive(Debug, Clone)]
 pub struct AuditOptions {
     pub max_results: Option<usize>,
@@ -83,6 +86,7 @@ pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {
         } else {
             AuditVerdict::Warn
         },
+        verification_note: AUDIT_VERIFICATION_NOTE.to_string(),
         summary: AuditSummary {
             total_findings,
             returned_findings: findings.len(),
