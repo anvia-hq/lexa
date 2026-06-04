@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
-use crate::engine::{Engine, SearchOptions};
+use crate::engine::{Engine, FileFilterOptions, SearchOptions};
 use crate::freshness;
 use crate::project_path::{normalize_project_path, project_target_path, PathMode};
 use crate::snapshot;
@@ -219,10 +219,11 @@ impl McpServer {
             ),
             "outline" => self.tool_outline(req_str(args, "path")?),
             "symbol_defs" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
+            "symbol_search" => self.tool_symbol_search(args),
             "word_refs" => self.tool_find_word(req_any_str(args, &["word", "query"])?),
             "text_search" => self.tool_search(args),
             "callers" => self.tool_find_callers(req_any_str(args, &["name", "query"])?),
-            "brief" => self.tool_brief(req_any_str(args, &["task", "query"])?),
+            "brief" => self.tool_brief(args),
             "trace_deps" => self.tool_trace_deps(args),
             "read" => self.tool_read(args),
             "patch" => self.tool_patch(args),
@@ -230,6 +231,8 @@ impl McpServer {
             "changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
             "recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
             "status" => Ok(self.tool_status()),
+            "reindex" => self.tool_reindex(),
+            "clear_index" => self.tool_clear_index(),
             "audit" => self.tool_audit(args),
             "pipeline" => self.tool_pipeline(args),
             _ => bail!("unknown tool: {name}"),
@@ -240,10 +243,17 @@ impl McpServer {
         let limit = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
             .unwrap_or(200);
-        let mut files = self.engine.file_map();
-        let total = files.len();
-        let truncated = files.len() > limit;
-        files.truncate(limit);
+        let filters = FileFilterOptions {
+            path_prefix: opt_str(args, "path")
+                .filter(|path| !path.is_empty())
+                .map(ToString::to_string),
+            path_glob: opt_str(args, "path_glob").map(ToString::to_string),
+            language: opt_str(args, "language").map(ToString::to_string),
+            min_lines: opt_u32(args, "min_lines"),
+            max_lines: opt_u32(args, "max_lines"),
+            max_results: Some(limit),
+        };
+        let (files, total, truncated) = self.engine.filtered_files(&filters);
         let text = files
             .iter()
             .map(|(path, meta)| {
@@ -264,6 +274,13 @@ impl McpServer {
                 "total": total,
                 "limit": limit,
                 "truncated": truncated,
+                "filters": {
+                    "path_prefix": filters.path_prefix,
+                    "path_glob": filters.path_glob,
+                    "language": filters.language,
+                    "min_lines": filters.min_lines,
+                    "max_lines": filters.max_lines,
+                },
                 "files": files.into_iter().map(|(path, meta)| json!({
                     "path": path,
                     "language": meta.language.as_str(),
@@ -368,7 +385,13 @@ impl McpServer {
     }
 
     fn tool_outline(&self, path: &str) -> Result<ToolOutput> {
-        let path = normalize_project_path(&self.root, path, PathMode::Existing)?;
+        let path = match normalize_project_path(&self.root, path, PathMode::Existing) {
+            Ok(path) => path,
+            Err(_) if !project_target_path(&self.root, path).exists() => {
+                bail!("file not found: {path}");
+            }
+            Err(err) => return Err(err),
+        };
         let Some(outline) = self.engine.get_outline(&path) else {
             bail!("file not found: {path}");
         };
@@ -399,7 +422,11 @@ impl McpServer {
         }
         if !outline.symbols.is_empty() {
             out.push_str("\nSymbols:\n");
-            for sym in &outline.symbols {
+            for sym in outline
+                .symbols
+                .iter()
+                .filter(|sym| sym.kind != crate::types::SymbolKind::Import)
+            {
                 let detail = sym.detail.as_deref().unwrap_or("");
                 let detail_str = if detail.is_empty() {
                     String::new()
@@ -457,6 +484,49 @@ impl McpServer {
         Ok(ToolOutput::new(
             text,
             json!({"name": name, "count": results.len(), "results": results}),
+        ))
+    }
+
+    fn tool_symbol_search(&self, args: &Value) -> Result<ToolOutput> {
+        let query = req_any_str(args, &["query", "name"])?;
+        let limit = opt_usize(args, "max_results")
+            .or_else(|| opt_usize(args, "max"))
+            .unwrap_or(20);
+        let results = self.engine.fuzzy_symbols(query, limit);
+        let text = if results.is_empty() {
+            format!("No symbols found matching '{query}'")
+        } else {
+            results
+                .iter()
+                .map(|result| {
+                    let detail = result.detail.as_deref().unwrap_or("");
+                    let detail_str = if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {detail}")
+                    };
+                    format!(
+                        "{:.2}  {}:{}-{} {} {}{}",
+                        result.score,
+                        result.path,
+                        result.line_start,
+                        result.line_end,
+                        result.kind,
+                        result.name,
+                        detail_str
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(ToolOutput::new(
+            text,
+            json!({
+                "query": query,
+                "count": results.len(),
+                "limit": limit,
+                "results": results,
+            }),
         ))
     }
 
@@ -548,10 +618,22 @@ impl McpServer {
         ))
     }
 
-    fn tool_brief(&self, task: &str) -> Result<ToolOutput> {
-        let max_results = 10;
-        let text = self.engine.build_context(task, max_results);
-        let details = self.engine.build_context_details(task, max_results);
+    fn tool_brief(&self, args: &Value) -> Result<ToolOutput> {
+        let task = req_any_str(args, &["task", "query"])?;
+        let options = crate::engine::ContextOptions {
+            max_results: opt_usize(args, "max_results")
+                .or_else(|| opt_usize(args, "max"))
+                .unwrap_or(10),
+            path_prefix: opt_str(args, "path_prefix")
+                .or_else(|| opt_str(args, "path"))
+                .map(ToString::to_string),
+            path_glob: opt_str(args, "path_glob").map(ToString::to_string),
+            language: opt_str(args, "language").map(ToString::to_string),
+        };
+        let text = self.engine.build_context_with_options(task, &options);
+        let details = self
+            .engine
+            .build_context_details_with_options(task, &options);
         Ok(ToolOutput::new(text, json!(details)))
     }
 
@@ -831,11 +913,13 @@ impl McpServer {
     }
 
     fn tool_status(&self) -> ToolOutput {
+        let graph = graph_status(&self.graph_path);
         let text = format!(
-            "files: {}\nseq: {} (session-local)\ngraph: {}\nchange_history_persisted: false",
+            "files: {}\nseq: {} (session-local)\ngraph: {}\ngraph_exists: {}\nchange_history_persisted: false",
             self.engine.file_count(),
             self.engine.store().current_seq(),
-            self.graph_path.display()
+            self.graph_path.display(),
+            graph["exists"].as_bool().unwrap_or(false)
         )
         .to_string();
         ToolOutput::new(
@@ -847,9 +931,53 @@ impl McpServer {
                 "word_indexed_files": self.engine.word_index_file_count(),
                 "seq": self.engine.store().current_seq(),
                 "change_history_persisted": false,
-                "graph": self.graph_path.display().to_string(),
+                "graph": graph,
             }),
         )
+    }
+
+    fn tool_reindex(&mut self) -> Result<ToolOutput> {
+        let mut engine = Engine::new(16384);
+        let count = engine.index_project(&self.root);
+        if self.persist_graph {
+            snapshot::write_snapshot(&engine, &self.graph_path)?;
+        }
+        self.engine = engine;
+        Ok(ToolOutput::new(
+            format!("reindexed {count} files"),
+            json!({
+                "files_indexed": count,
+                "symbols_indexed": self.engine.symbol_index_count(),
+                "unique_words_indexed": self.engine.word_index_count(),
+                "word_indexed_files": self.engine.word_index_file_count(),
+                "graph": graph_status(&self.graph_path),
+                "persisted": self.persist_graph,
+            }),
+        ))
+    }
+
+    fn tool_clear_index(&mut self) -> Result<ToolOutput> {
+        let existed = self.graph_path.exists();
+        if existed {
+            std::fs::remove_file(&self.graph_path)
+                .with_context(|| format!("failed to remove graph {}", self.graph_path.display()))?;
+        }
+        self.engine = Engine::new(16384);
+        Ok(ToolOutput::new(
+            if existed {
+                format!(
+                    "cleared index and removed graph {}",
+                    self.graph_path.display()
+                )
+            } else {
+                "cleared index; no graph file was present".to_string()
+            },
+            json!({
+                "cleared": true,
+                "graph_removed": existed,
+                "graph": graph_status(&self.graph_path),
+            }),
+        ))
     }
 
     fn tool_audit(&self, args: &Value) -> Result<ToolOutput> {
@@ -883,18 +1011,20 @@ impl McpServer {
     }
 
     fn tool_pipeline(&self, args: &Value) -> Result<ToolOutput> {
-        let pipeline =
-            if let Some(text) = opt_str(args, "query").or_else(|| opt_str(args, "pipeline")) {
-                text.to_string()
-            } else if let Some(steps) = args.get("steps").and_then(Value::as_array) {
-                steps
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            } else {
-                bail!("pipeline requires query/pipeline string or steps array");
-            };
+        let pipeline_arg = opt_str(args, "pipeline");
+        let steps_arg = args.get("steps").and_then(Value::as_array);
+
+        let pipeline = if let Some(text) = pipeline_arg {
+            text.to_string()
+        } else if let Some(steps) = steps_arg {
+            steps
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        } else {
+            bail!("pipeline requires pipeline string or steps array");
+        };
 
         let output = crate::pipeline::run_output(&self.engine, &pipeline);
         let text = output.render();
@@ -1060,12 +1190,27 @@ fn json_rpc_error(id: Option<Value>, code: i32, message: &str) -> Value {
     })
 }
 
+fn graph_status(path: &PathBuf) -> Value {
+    match std::fs::metadata(path) {
+        Ok(metadata) => json!({
+            "path": path.display().to_string(),
+            "exists": true,
+            "size_bytes": metadata.len(),
+            "size_mb": metadata.len() as f64 / (1024.0 * 1024.0),
+        }),
+        Err(_) => json!({
+            "path": path.display().to_string(),
+            "exists": false,
+        }),
+    }
+}
+
 fn tools() -> Value {
     json!([
         tool(
             "files",
-            "List indexed files with language, line, and symbol counts.",
-            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":[]})
+            "List indexed files with optional path, glob, language, and line-count filters.",
+            json!({"type":"object","properties":{"path":{"type":"string","description":"Optional project-relative path prefix."},"path_glob":{"type":"string"},"language":{"type":"string","description":"Language name such as typescript, rust, json, or markdown."},"min_lines":{"type":"integer"},"max_lines":{"type":"integer"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":[]})
         ),
         tool(
             "list",
@@ -1093,8 +1238,13 @@ fn tools() -> Value {
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
         ),
         tool(
+            "symbol_search",
+            "Fuzzy symbol search for partial names such as createAgent matching createProjectAgent.",
+            json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":["query"]})
+        ),
+        tool(
             "word_refs",
-            "Find exact identifier or word references.",
+            "Find exact identifier or word occurrences, including definitions and declarations.",
             json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
         ),
         tool(
@@ -1104,17 +1254,17 @@ fn tools() -> Value {
         ),
         tool(
             "callers",
-            "Find non-definition call sites for a symbol.",
+            "Find non-definition call sites/usages for a symbol; excludes declarations and type aliases.",
             json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
         ),
         tool(
             "brief",
-            "Compose task-focused context from symbols and search snippets.",
-            json!({"type":"object","properties":{"task":{"type":"string"}},"required":["task"]})
+            "Build a compact context bundle for an explicit code task. Best with symbol names, path fragments, or scoped keywords; not natural-language QA.",
+            json!({"type":"object","properties":{"task":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."},"path_prefix":{"type":"string","description":"Restrict context to a project-relative path prefix."},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"},"language":{"type":"string"}},"required":["task"]})
         ),
         tool(
             "trace_deps",
-            "Trace imported_by or depends_on relationships.",
+            "Trace resolved project-file imported_by or depends_on relationships. External packages are not returned as dependencies; depends_on includes unresolved local imports separately.",
             json!({"type":"object","properties":{"path":{"type":"string"},"direction":{"type":"string","enum":["imported_by","depends_on"]},"transitive":{"type":"boolean"}},"required":["path"]})
         ),
         tool(
@@ -1148,14 +1298,24 @@ fn tools() -> Value {
             json!({"type":"object","properties":{},"required":[]})
         ),
         tool(
+            "reindex",
+            "Rebuild the in-memory index from the MCP project root and persist the graph when persistence is enabled.",
+            json!({"type":"object","properties":{},"required":[]})
+        ),
+        tool(
+            "clear_index",
+            "Clear the in-memory index and remove the graph file if present.",
+            json!({"type":"object","properties":{},"required":[]})
+        ),
+        tool(
             "audit",
-            "Run a review-oriented architecture audit over the indexed project.",
-            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string"},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]})
+            "Run a review-oriented architecture audit over the indexed project. config is a TOML file path; max is an alias for max_results.",
+            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string","description":"Path to a Lexa audit TOML config file, such as lexa.toml or .lexa/audit.toml. This is not a named preset."},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]})
         ),
         tool(
             "pipeline",
-            "Run a composable pipeline string such as 'glob src/**/*.rs | search main | limit 5'.",
-            json!({"type":"object","properties":{"pipeline":{"type":"string"},"query":{"type":"string"},"steps":{"type":"array","items":{"type":"string"}}},"required":[]})
+            "Run an advanced composable pipeline. Prefer steps array form. Commands: glob/find, fuzzy/path_search, search/text_search, filter, outline, deps, read, sort, limit, count.",
+            json!({"type":"object","properties":{"pipeline":{"type":"string","description":"Advanced pipe string, e.g. glob src/**/*.rs | search main | limit 5."},"steps":{"type":"array","items":{"type":"string"},"description":"Recommended form; each item is one pipeline step, e.g. [\"glob src/**/*.rs\", \"search main\", \"limit 5\"]. Put search terms inside the relevant step."}},"required":[]})
         )
     ])
 }
@@ -1431,11 +1591,14 @@ mod tests {
         assert!(names.contains(&"files"));
         assert!(names.contains(&"path_search"));
         assert!(names.contains(&"symbol_defs"));
+        assert!(names.contains(&"symbol_search"));
         assert!(names.contains(&"word_refs"));
         assert!(names.contains(&"text_search"));
         assert!(names.contains(&"callers"));
         assert!(names.contains(&"create"));
         assert!(names.contains(&"audit"));
+        assert!(names.contains(&"reindex"));
+        assert!(names.contains(&"clear_index"));
         assert!(names.iter().all(|name| !name.starts_with("lexa_")));
         assert!(!names.contains(&"lexa_map"));
         assert!(!names.contains(&"lexa_find_path"));
@@ -1443,5 +1606,85 @@ mod tests {
         assert!(!names.contains(&"lexa_find_word"));
         assert!(!names.contains(&"lexa_search"));
         assert!(!names.contains(&"lexa_find_callers"));
+    }
+
+    #[test]
+    fn outline_missing_file_reports_clean_error() {
+        let root = tempfile::tempdir().unwrap();
+        let server = McpServer::new(
+            Engine::new(32),
+            root.path().to_path_buf(),
+            root.path().join(".lexa/graph.lexa"),
+            false,
+            false,
+        );
+
+        let err = match server.tool_outline("apps/desktop/CLAUDE.md") {
+            Ok(_) => panic!("expected missing file error"),
+            Err(err) => err.to_string(),
+        };
+
+        assert_eq!(err, "file not found: apps/desktop/CLAUDE.md");
+        assert!(!err.contains(root.path().to_string_lossy().as_ref()));
+        assert!(!err.contains("canonicalize"));
+    }
+
+    #[test]
+    fn pipeline_steps_ignore_removed_query_argument() {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = Engine::new(32);
+        engine.index_file("src/a.ts", "export type AgentRunRequest = {};\n");
+        let server = McpServer::new(
+            engine,
+            root.path().to_path_buf(),
+            root.path().join(".lexa/graph.lexa"),
+            false,
+            false,
+        );
+
+        let output = server
+            .tool_pipeline(&json!({
+            "query": "ignored",
+            "steps": ["search AgentRunRequest", "limit 3"]
+            }))
+            .unwrap();
+
+        assert!(output.text.contains("AgentRunRequest"));
+    }
+
+    #[test]
+    fn pipeline_query_only_is_not_supported() {
+        let root = tempfile::tempdir().unwrap();
+        let server = McpServer::new(
+            Engine::new(32),
+            root.path().to_path_buf(),
+            root.path().join(".lexa/graph.lexa"),
+            false,
+            false,
+        );
+
+        let err = match server.tool_pipeline(&json!({"query": "search AgentRunRequest | limit 1"}))
+        {
+            Ok(_) => panic!("expected query-only error"),
+            Err(err) => err.to_string(),
+        };
+
+        assert_eq!(err, "pipeline requires pipeline string or steps array");
+    }
+
+    #[test]
+    fn pipeline_schema_omits_query_argument() {
+        let tools = tools();
+        let pipeline = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool.get("name").and_then(Value::as_str) == Some("pipeline"))
+            .unwrap();
+        let properties = pipeline["inputSchema"]["properties"].as_object().unwrap();
+
+        assert!(properties.contains_key("pipeline"));
+        assert!(properties.contains_key("steps"));
+        assert!(!properties.contains_key("query"));
     }
 }

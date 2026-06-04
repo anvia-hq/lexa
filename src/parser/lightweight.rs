@@ -263,16 +263,16 @@ fn parse_package_json(path: &str, source: &str) -> FileOutline {
             Some("scripts") => push(
                 &mut outline,
                 name,
-                SymbolKind::Function,
+                SymbolKind::Constant,
                 line_num,
                 Some("npm script".to_string()),
             ),
             Some("dependencies") | Some("devDependencies") | Some("peerDependencies") => push(
                 &mut outline,
                 name,
-                SymbolKind::Import,
+                SymbolKind::Constant,
                 line_num,
-                active_section.clone(),
+                Some(manifest_dependency_detail(active_section.as_deref().unwrap()).to_string()),
             ),
             Some("exports") | Some("bin") => push(
                 &mut outline,
@@ -294,6 +294,14 @@ fn parse_package_json(path: &str, source: &str) -> FileOutline {
 
     infer_symbol_ranges(&mut outline);
     outline
+}
+
+fn manifest_dependency_detail(section: &str) -> &'static str {
+    match section {
+        "devDependencies" => "dev dependency",
+        "peerDependencies" => "peer dependency",
+        _ => "dependency",
+    }
 }
 
 fn parse_toml(path: &str, source: &str) -> FileOutline {
@@ -1031,10 +1039,16 @@ function renderTitle() {}
         );
 
         assert!(names(&outline, SymbolKind::Module).contains(&"scripts".to_string()));
-        assert!(names(&outline, SymbolKind::Function).contains(&"test".to_string()));
-        assert!(names(&outline, SymbolKind::Import).contains(&"react".to_string()));
-        assert!(names(&outline, SymbolKind::Import).contains(&"vite".to_string()));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"test".to_string()));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"react".to_string()));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"vite".to_string()));
         assert!(names(&outline, SymbolKind::Module).contains(&"packages/*".to_string()));
+        let react = outline
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "react")
+            .unwrap();
+        assert_eq!(react.detail.as_deref(), Some("dependency"));
     }
 
     #[test]
