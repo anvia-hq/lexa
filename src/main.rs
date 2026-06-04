@@ -22,7 +22,13 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(long, global = true, action = ArgAction::SetTrue, help = "Print version and check for updates")]
+    #[arg(
+        id = "print_version",
+        long = "version",
+        global = true,
+        action = ArgAction::SetTrue,
+        help = "Print version and check for updates"
+    )]
     version: bool,
 
     #[arg(long, global = true)]
@@ -263,7 +269,7 @@ enum Commands {
         about = "Upgrade the Lexa binary, not the project index"
     )]
     Upgrade {
-        #[arg(default_value = "latest")]
+        #[arg(id = "upgrade_version", default_value = "latest")]
         version: String,
 
         #[arg(long, help = "Directory to install the upgraded Lexa binary into")]
@@ -1677,6 +1683,23 @@ fn edit_op_str(op: edit::EditOp) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrade_default_version_does_not_conflict_with_global_version_flag() {
+        let cli = Cli::try_parse_from(["lexa", "upgrade"]).unwrap();
+
+        assert!(!cli.version);
+        match cli.command {
+            Some(Commands::Upgrade {
+                version,
+                install_dir,
+            }) => {
+                assert_eq!(version, "latest");
+                assert!(install_dir.is_none());
+            }
+            _ => panic!("expected upgrade command"),
+        }
+    }
 
     #[test]
     fn mcp_defaults_to_refresh_with_standard_debounce() {

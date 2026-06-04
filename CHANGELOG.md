@@ -4,6 +4,12 @@
 
 No changes yet.
 
+## v0.6.1 - 2026-06-04
+
+### Fixed
+
+- Fixed a `clap` argument-id collision that caused `lexa upgrade` to panic when the global `--version` flag and upgrade positional version argument shared the same internal id.
+
 ## v0.6.0 - 2026-06-04
 
 ### Added
