@@ -63,8 +63,10 @@ pub struct WalkedFileMeta {
     pub path: String,
     pub modified_ms: u64,
     pub byte_size: u64,
+    pub indexable: bool,
 }
 
+#[allow(dead_code)]
 pub fn walk_project(root: impl AsRef<Path>) -> Vec<WalkedFile> {
     let mut files = Vec::new();
     let root = root.as_ref();
@@ -92,6 +94,9 @@ pub fn walk_project(root: impl AsRef<Path>) -> Vec<WalkedFile> {
         let Some(meta) = walked_file_meta(root, path) else {
             continue;
         };
+        if !meta.indexable {
+            continue;
+        }
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -142,12 +147,22 @@ pub fn walk_single_file(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Optio
     let root = root.as_ref();
     let path = path.as_ref();
     let meta = walked_file_meta(root, path)?;
+    if !meta.indexable {
+        return None;
+    }
     let content = std::fs::read_to_string(path).ok()?;
     Some(WalkedFile {
         path: meta.path,
         content,
         modified_ms: meta.modified_ms,
     })
+}
+
+pub fn walk_single_file_meta(
+    root: impl AsRef<Path>,
+    path: impl AsRef<Path>,
+) -> Option<WalkedFileMeta> {
+    walked_file_meta(root.as_ref(), path.as_ref())
 }
 
 pub fn relative_path(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<String> {
@@ -176,11 +191,16 @@ fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
         .to_string();
 
     let language = detect_language(&relative);
+    let mut indexable = true;
     if language == Language::Unknown {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             let ext_lower = ext.to_lowercase();
             if is_binary_extension(&ext_lower) {
-                return None;
+                if is_resolvable_asset_extension(&ext_lower) {
+                    indexable = false;
+                } else {
+                    return None;
+                }
             }
         }
     }
@@ -201,6 +221,7 @@ fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
         path: relative,
         modified_ms,
         byte_size: metadata.len(),
+        indexable,
     })
 }
 
@@ -231,8 +252,8 @@ fn is_binary_extension(ext: &str) -> bool {
             | "gif"
             | "bmp"
             | "ico"
-            | "svg"
             | "webp"
+            | "avif"
             | "mp3"
             | "mp4"
             | "wav"
@@ -268,5 +289,12 @@ fn is_binary_extension(ext: &str) -> bool {
             | "min.css"
             | "wasm"
             | "node"
+    )
+}
+
+fn is_resolvable_asset_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" | "avif"
     )
 }

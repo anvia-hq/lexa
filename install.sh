@@ -59,9 +59,13 @@ asset_version="${tag#v}"
 archive="lexa-${platform}-${asset_version}.tar.gz"
 url="https://github.com/$repo/releases/download/$tag/$archive"
 tmp_dir="$(mktemp -d)"
+install_tmp=""
 
 cleanup() {
   rm -rf "$tmp_dir"
+  if [ -n "$install_tmp" ]; then
+    rm -f "$install_tmp"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -77,8 +81,13 @@ if [ ! -f "$binary" ]; then
 fi
 
 mkdir -p "$install_dir"
-cp "$binary" "$install_dir/lexa"
-chmod 755 "$install_dir/lexa"
+install_tmp="$(mktemp "$install_dir/.lexa.XXXXXX")"
+cp "$binary" "$install_tmp"
+chmod 755 "$install_tmp"
+
+"$install_tmp" --help >/dev/null
+mv -f "$install_tmp" "$install_dir/lexa"
+install_tmp=""
 
 printf 'Installed lexa %s to %s/lexa\n' "$tag" "$install_dir"
 
