@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-Changes since `v0.5.0`.
+No changes yet.
+
+## v0.5.1 - 2026-06-04
 
 ### Fixed
 
