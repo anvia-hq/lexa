@@ -291,6 +291,13 @@ pub fn load_audit_config(
         return Ok(AuditConfig::default());
     };
 
+    if explicit_path.is_some() && !path.exists() {
+        bail!(
+            "audit config file not found: {} (config is a file path, not a named preset; use the strict option separately)",
+            path.display()
+        );
+    }
+
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read audit config {}", path.display()))?;
     let file = toml::from_str::<AuditConfigFile>(&content)
@@ -400,5 +407,23 @@ impl AuditRules {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_missing_config_reports_file_path_semantics() {
+        let root = tempfile::tempdir().unwrap();
+
+        let err = load_audit_config(root.path(), Some(Path::new("strict")), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("audit config file not found"));
+        assert!(err.contains("config is a file path"));
+        assert!(err.contains("not a named preset"));
     }
 }

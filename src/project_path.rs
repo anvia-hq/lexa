@@ -34,6 +34,9 @@ fn normalize_existing_path(root: &Path, input: &Path) -> Result<String> {
     } else {
         root.join(input)
     };
+    if !target.exists() {
+        bail!("file not found: {}", display_input_path(input));
+    }
     let target = target
         .canonicalize()
         .with_context(|| format!("failed to canonicalize path {}", target.display()))?;
@@ -110,6 +113,10 @@ fn path_to_project_string(path: &Path) -> Result<String> {
     Ok(value)
 }
 
+fn display_input_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +174,19 @@ mod tests {
         assert!(err.to_string().contains("outside project root"));
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_file(outside).unwrap();
+    }
+
+    #[test]
+    fn missing_existing_path_reports_input_path() {
+        let root = temp_root("missing");
+
+        let err =
+            normalize_project_path(&root, "nonexistent/file.ts", PathMode::Existing).unwrap_err();
+
+        assert_eq!(err.to_string(), "file not found: nonexistent/file.ts");
+        assert!(!err.to_string().contains(root.to_string_lossy().as_ref()));
+        assert!(!err.to_string().contains("canonicalize"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

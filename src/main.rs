@@ -1,22 +1,30 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
-use lexa::engine::{self, SearchOptions};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
+use lexa::engine::{self, ContextOptions, FileFilterOptions, SearchOptions};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
 use lexa::{audit, edit, freshness, mcp, pipeline, snapshot, store};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_GRAPH_PATH: &str = ".lexa/graph.lexa";
+const LEXA_REPO: &str = "anvia-hq/lexa";
+const VERSION_CACHE_TTL_SECS: u64 = 60 * 60 * 12;
 
 #[derive(Parser)]
 #[command(
     name = "lexa",
-    version,
+    disable_version_flag = true,
     about = "Fast code intelligence engine for AI agents"
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+
+    #[arg(long, global = true, action = ArgAction::SetTrue, help = "Print version and check for updates")]
+    version: bool,
 
     #[arg(long, global = true)]
     graph: Option<PathBuf>,
@@ -37,10 +45,33 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    Reindex {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
+    #[command(name = "clear-index")]
+    ClearIndex,
+
     #[command(name = "files")]
     Files {
         #[arg(default_value = "")]
         path: String,
+
+        #[arg(long)]
+        path_glob: Option<String>,
+
+        #[arg(long)]
+        language: Option<String>,
+
+        #[arg(long)]
+        min_lines: Option<u32>,
+
+        #[arg(long)]
+        max_lines: Option<u32>,
+
+        #[arg(long, alias = "max")]
+        max_results: Option<usize>,
     },
 
     List {
@@ -88,6 +119,14 @@ enum Commands {
         name: String,
     },
 
+    #[command(name = "symbol-search")]
+    SymbolSearch {
+        query: String,
+
+        #[arg(short, long, default_value = "20")]
+        max: usize,
+    },
+
     #[command(name = "word-refs")]
     WordRefs {
         word: String,
@@ -121,6 +160,15 @@ enum Commands {
 
         #[arg(short, long, default_value = "10")]
         max: usize,
+
+        #[arg(long)]
+        path_prefix: Option<String>,
+
+        #[arg(long)]
+        path_glob: Option<String>,
+
+        #[arg(long)]
+        language: Option<String>,
     },
 
     Changes {
@@ -262,124 +310,166 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Index {
-            ref path,
-            ref output,
-        } => cmd_index(path, output.as_ref(), &cli),
-        Commands::Files { ref path } => cmd_tree(path, &cli),
-        Commands::List { ref path } => cmd_ls(path, &cli),
-        Commands::PathSearch { ref pattern, max } => cmd_find(pattern, max, &cli),
+    if cli.version {
+        return cmd_version(&cli);
+    }
+
+    let Some(command) = &cli.command else {
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    };
+
+    match command {
+        Commands::Index { path, output } => cmd_index(path, output.as_ref(), &cli),
+        Commands::Reindex { path } => cmd_reindex(path, &cli),
+        Commands::ClearIndex => cmd_clear_index(&cli),
+        Commands::Files {
+            path,
+            path_glob,
+            language,
+            min_lines,
+            max_lines,
+            max_results,
+        } => cmd_tree(
+            FileFilterOptions {
+                path_prefix: (!path.is_empty()).then(|| path.clone()),
+                path_glob: path_glob.clone(),
+                language: language.clone(),
+                min_lines: *min_lines,
+                max_lines: *max_lines,
+                max_results: *max_results,
+            },
+            &cli,
+        ),
+        Commands::List { path } => cmd_ls(path, &cli),
+        Commands::PathSearch { pattern, max } => cmd_find(pattern, *max, &cli),
         Commands::TextSearch {
-            ref query,
+            query,
             max,
             regex,
             scope,
             compact,
             paths_only,
-            ref path_glob,
+            path_glob,
         } => cmd_search(
             query,
             SearchOptions {
-                max_results: max,
-                regex,
-                scope,
-                compact,
-                paths_only,
+                max_results: *max,
+                regex: *regex,
+                scope: *scope,
+                compact: *compact,
+                paths_only: *paths_only,
                 path_glob: path_glob.clone(),
             },
             &cli,
         ),
-        Commands::Outline { ref path } => cmd_outline(path, &cli),
-        Commands::SymbolDefs { ref name } => cmd_symbol(name, &cli),
-        Commands::WordRefs { ref word } => cmd_word(word, &cli),
+        Commands::Outline { path } => cmd_outline(path, &cli),
+        Commands::SymbolDefs { name } => cmd_symbol(name, &cli),
+        Commands::SymbolSearch { query, max } => cmd_symbol_search(query, *max, &cli),
+        Commands::WordRefs { word } => cmd_word(word, &cli),
         Commands::Deps {
-            ref path,
+            path,
             reverse,
             transitive,
-        } => cmd_deps(path, reverse, transitive, &cli),
-        Commands::Recent { limit } => cmd_hot(limit, &cli),
-        Commands::Callers { ref name, max } => cmd_callers(name, max, &cli),
-        Commands::Brief { ref task, max } => cmd_context(task, max, &cli),
-        Commands::Changes { since } => cmd_changes(since, &cli),
+        } => cmd_deps(path, *reverse, *transitive, &cli),
+        Commands::Recent { limit } => cmd_hot(*limit, &cli),
+        Commands::Callers { name, max } => cmd_callers(name, *max, &cli),
+        Commands::Brief {
+            task,
+            max,
+            path_prefix,
+            path_glob,
+            language,
+        } => cmd_context(
+            task,
+            ContextOptions {
+                max_results: *max,
+                path_prefix: path_prefix.clone(),
+                path_glob: path_glob.clone(),
+                language: language.clone(),
+            },
+            &cli,
+        ),
+        Commands::Changes { since } => cmd_changes(*since, &cli),
         Commands::Read {
-            ref path,
-            ref line_range,
+            path,
+            line_range,
             compact,
-            ref if_hash,
+            if_hash,
             hash,
         } => cmd_read(
             path,
             line_range.as_deref(),
-            compact,
+            *compact,
             if_hash.as_deref(),
-            hash,
+            *hash,
             &cli,
         ),
         Commands::Patch {
-            ref path,
+            path,
             op,
-            ref line_range,
+            line_range,
             after,
-            ref content,
-            ref content_file,
-            ref if_hash,
+            content,
+            content_file,
+            if_hash,
             dry_run,
         } => cmd_edit(
             path,
-            op,
+            *op,
             line_range.as_deref(),
-            after,
+            *after,
             content.as_deref(),
             content_file.as_ref(),
             if_hash.as_deref(),
-            dry_run,
+            *dry_run,
             &cli,
         ),
         Commands::Create {
-            ref path,
-            ref content,
-            ref content_file,
+            path,
+            content,
+            content_file,
             overwrite,
             dry_run,
         } => cmd_create(
             path,
             content.as_deref(),
             content_file.as_ref(),
-            overwrite,
-            dry_run,
+            *overwrite,
+            *dry_run,
             &cli,
         ),
-        Commands::Glob { ref pattern } => cmd_glob(pattern, &cli),
+        Commands::Glob { pattern } => cmd_glob(pattern, &cli),
         Commands::Status => cmd_status(&cli),
         Commands::Audit {
             max,
-            ref since,
+            since,
             strict,
-            ref config,
+            config,
             no_config,
-            ref include,
+            include,
         } => cmd_audit(
-            max,
+            *max,
             since.as_deref(),
-            strict,
+            *strict,
             config.as_ref(),
-            no_config,
+            *no_config,
             include,
             &cli,
         ),
         Commands::Upgrade {
-            ref version,
-            ref install_dir,
+            version,
+            install_dir,
         } => cmd_upgrade(version, install_dir.as_ref(), &cli),
-        Commands::Watch { ref path, debounce } => cmd_watch(path, debounce, &cli),
-        Commands::Pipeline { ref pipeline } => cmd_query(pipeline, &cli),
+        Commands::Watch { path, debounce } => cmd_watch(path, *debounce, &cli),
+        Commands::Pipeline { pipeline } => cmd_pipeline(pipeline, &cli),
         Commands::Mcp {
-            ref path,
+            path,
             no_refresh,
             debounce,
             structured_content,
-        } => cmd_mcp(path, no_refresh, debounce, structured_content, &cli),
+        } => cmd_mcp(path, *no_refresh, *debounce, *structured_content, &cli),
     }
 }
 
@@ -393,6 +483,31 @@ fn project_graph_path(root: &std::path::Path, cli: &Cli) -> PathBuf {
     cli.graph
         .clone()
         .unwrap_or_else(|| root.join(DEFAULT_GRAPH_PATH))
+}
+
+fn cmd_version(cli: &Cli) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    let latest = latest_version_with_cache();
+    let update_available = latest
+        .as_deref()
+        .is_some_and(|latest| version_is_newer(latest, current));
+
+    if cli.json {
+        return print_json(json!({
+            "version": current,
+            "latest": latest,
+            "update_available": update_available,
+        }));
+    }
+
+    println!("lexa {current}");
+    if update_available {
+        if let Some(latest) = latest {
+            println!("update available: {latest}");
+            println!("run: lexa upgrade");
+        }
+    }
+    Ok(())
 }
 
 fn load_engine(cli: &Cli) -> engine::Engine {
@@ -422,18 +537,18 @@ fn load_engine(cli: &Cli) -> engine::Engine {
 
 fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> {
     let root = std::fs::canonicalize(root)?;
-
-    if !cli.json {
-        println!("Indexing {}...", root.display());
-    }
-
-    let mut engine = engine::Engine::new(16384);
-    let count = engine.index_project(&root);
     let snap_path = if let Some(out) = output {
         out.clone()
     } else {
         graph_path(cli)
     };
+
+    if !cli.json {
+        print_index_banner(&root, &snap_path);
+    }
+
+    let mut engine = engine::Engine::new(16384);
+    let count = engine.index_project(&root);
 
     if cli.json {
         snapshot::write_snapshot(&engine, &snap_path)?;
@@ -455,6 +570,49 @@ fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> 
     snapshot::write_snapshot(&engine, &snap_path)?;
     println!("Graph saved to {}", snap_path.display());
 
+    Ok(())
+}
+
+fn print_index_banner(root: &std::path::Path, graph: &std::path::Path) {
+    if std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").ok().as_deref() != Some("dumb")
+    {
+        println!(
+            "\x1b[1;38;5;81mLexa\x1b[0m \x1b[38;5;245mFast code intelligence for AI agents\x1b[0m"
+        );
+        println!("\x1b[38;5;245mroot\x1b[0m  {}", root.display());
+        println!("\x1b[38;5;245mgraph\x1b[0m {}", graph.display());
+        println!();
+    } else {
+        println!("Indexing {}...", root.display());
+    }
+}
+
+fn cmd_reindex(root: &PathBuf, cli: &Cli) -> Result<()> {
+    cmd_index(root, None, cli)
+}
+
+fn cmd_clear_index(cli: &Cli) -> Result<()> {
+    let snap_path = graph_path(cli);
+    let existed = snap_path.exists();
+    if existed {
+        std::fs::remove_file(&snap_path)
+            .with_context(|| format!("failed to remove graph {}", snap_path.display()))?;
+    }
+
+    if cli.json {
+        return print_json(json!({
+            "graph": snap_path.display().to_string(),
+            "removed": existed,
+        }));
+    }
+
+    if existed {
+        println!("Removed graph {}", snap_path.display());
+    } else {
+        println!("No graph file found at {}", snap_path.display());
+    }
     Ok(())
 }
 
@@ -571,7 +729,25 @@ fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Result<()> {
 fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
     let root = std::env::current_dir()?;
-    let path = normalize_project_path(&root, path, PathMode::Existing)?;
+    let path = match normalize_project_path(&root, path, PathMode::Existing) {
+        Ok(path) => path,
+        Err(_) if !project_target_path(&root, path).exists() => {
+            if cli.json {
+                return print_json(json!({
+                    "error": "file_not_found",
+                    "path": path,
+                    "available": engine.list_dir("").into_iter().take(20).map(|(name, _)| name).collect::<Vec<_>>(),
+                }));
+            }
+            println!("File not found: {}", path);
+            println!("Available files:");
+            for file in engine.list_dir("").iter().take(20) {
+                println!("  {}", file.0);
+            }
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
 
     match engine.get_outline(&path) {
         Some(outline) => {
@@ -619,7 +795,11 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
 
             if !outline.symbols.is_empty() {
                 println!("Symbols:");
-                for sym in &outline.symbols {
+                for sym in outline
+                    .symbols
+                    .iter()
+                    .filter(|sym| sym.kind != lexa::types::SymbolKind::Import)
+                {
                     let detail = sym.detail.as_deref().unwrap_or("");
                     let detail_str = if detail.is_empty() {
                         String::new()
@@ -647,6 +827,47 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
                 println!("  {}", file.0);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_symbol_search(query: &str, max: usize, cli: &Cli) -> Result<()> {
+    let engine = load_engine(cli);
+    let results = engine.fuzzy_symbols(query, max);
+
+    if cli.json {
+        return print_json(json!({
+            "query": query,
+            "count": results.len(),
+            "limit": max,
+            "results": results,
+        }));
+    }
+
+    if results.is_empty() {
+        println!("No symbols found matching '{}'", query);
+        return Ok(());
+    }
+
+    println!("{} symbol(s) matching '{}':", results.len(), query);
+    for result in &results {
+        let detail = result.detail.as_deref().unwrap_or("");
+        let detail_str = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", detail)
+        };
+        println!(
+            "  {:.2}  {}:{}-{} {} {}{}",
+            result.score,
+            result.path,
+            result.line_start,
+            result.line_end,
+            result.kind,
+            result.name,
+            detail_str
+        );
     }
 
     Ok(())
@@ -740,15 +961,24 @@ fn cmd_find(pattern: &str, max: usize, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_tree(path: &str, cli: &Cli) -> Result<()> {
+fn cmd_tree(filters: FileFilterOptions, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
+    let (files, total, truncated) = engine.filtered_files(&filters);
 
     if cli.json {
-        if path.is_empty() {
-            return print_json(json!({
-                "path": path,
-                "count": engine.file_count(),
-                "files": engine.file_map().into_iter().map(|(path, meta)| json!({
+        return print_json(json!({
+            "count": files.len(),
+            "total": total,
+            "truncated": truncated,
+            "limit": filters.max_results,
+            "filters": {
+                "path_prefix": filters.path_prefix,
+                "path_glob": filters.path_glob,
+                "language": filters.language,
+                "min_lines": filters.min_lines,
+                "max_lines": filters.max_lines,
+            },
+            "files": files.into_iter().map(|(path, meta)| json!({
                     "path": path,
                     "language": meta.language.as_str(),
                     "line_count": meta.line_count,
@@ -756,49 +986,24 @@ fn cmd_tree(path: &str, cli: &Cli) -> Result<()> {
                     "symbol_count": meta.symbol_count,
                     "modified_ms": meta.modified_ms,
                     "modified_utc": format_unix_ms_utc(meta.modified_ms),
-                })).collect::<Vec<_>>()
-            }));
-        }
-
-        let entries = engine.list_dir(path);
-        return print_json(json!({
-            "path": path,
-            "count": entries.len(),
-            "entries": entries.into_iter().map(|(name, meta)| {
-                if let Some(meta) = meta {
-                    json!({
-                        "name": name,
-                        "kind": "file",
-                        "language": meta.language.as_str(),
-                        "line_count": meta.line_count,
-                        "byte_size": meta.byte_size,
-                        "symbol_count": meta.symbol_count,
-                        "modified_ms": meta.modified_ms,
-                        "modified_utc": format_unix_ms_utc(meta.modified_ms),
-                    })
-                } else {
-                    json!({"name": name, "kind": "directory"})
-                }
-            }).collect::<Vec<_>>()
+            })).collect::<Vec<_>>()
         }));
     }
 
-    if path.is_empty() {
-        print!("{}", engine.get_tree());
+    if files.is_empty() {
+        println!("No indexed files match filters");
     } else {
-        let entries = engine.list_dir(path);
-        for (name, meta) in &entries {
-            if let Some(m) = meta {
-                println!(
-                    "{:<60} {:>8} {:>6}L {:>4} sym",
-                    name,
-                    m.language.as_str(),
-                    m.line_count,
-                    m.symbol_count
-                );
-            } else {
-                println!("{:<60} [dir]", name);
-            }
+        for (path, meta) in &files {
+            println!(
+                "{:<60} {:>8} {:>6}L {:>4} sym",
+                path,
+                meta.language.as_str(),
+                meta.line_count,
+                meta.symbol_count
+            );
+        }
+        if truncated {
+            println!("showing {} of {} matched files", files.len(), total);
         }
     }
 
@@ -930,12 +1135,13 @@ fn cmd_callers(name: &str, max: usize, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_context(task: &str, max: usize, cli: &Cli) -> Result<()> {
+fn cmd_context(task: &str, options: ContextOptions, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
+    let details = engine.build_context_details_with_options(task, &options);
     if cli.json {
-        return print_json(json!(engine.build_context_details(task, max)));
+        return print_json(json!(details));
     }
-    let context = engine.build_context(task, max);
+    let context = engine.build_context_with_options(task, &options);
     println!("{}", context);
     Ok(())
 }
@@ -1378,6 +1584,131 @@ fn cmd_upgrade(version: &str, install_dir: Option<&PathBuf>, cli: &Cli) -> Resul
     cmd_upgrade_unix(version, &install_dir, cli)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct VersionCache {
+    checked_at: u64,
+    latest: String,
+}
+
+fn latest_version_with_cache() -> Option<String> {
+    if update_check_disabled() {
+        return None;
+    }
+
+    let cache_path = version_cache_path()?;
+    let now = unix_secs();
+    if let Ok(content) = std::fs::read_to_string(&cache_path) {
+        if let Ok(cache) = serde_json::from_str::<VersionCache>(&content) {
+            if now.saturating_sub(cache.checked_at) <= VERSION_CACHE_TTL_SECS {
+                return Some(cache.latest);
+            }
+        }
+    }
+
+    let latest = fetch_latest_release_tag()?;
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let cache = VersionCache {
+        checked_at: now,
+        latest: latest.clone(),
+    };
+    if let Ok(content) = serde_json::to_string(&cache) {
+        let _ = std::fs::write(cache_path, content);
+    }
+    Some(latest)
+}
+
+fn update_check_disabled() -> bool {
+    std::env::var_os("LEXA_NO_UPDATE_CHECK").is_some()
+        || std::env::var_os("LEXA_SKIP_UPDATE_CHECK").is_some()
+        || std::env::var_os("NO_UPDATE_CHECK").is_some()
+}
+
+fn version_cache_path() -> Option<PathBuf> {
+    if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(cache_home).join("lexa/version-check.json"));
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        return Some(PathBuf::from(local_app_data).join("lexa/version-check.json"));
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".cache/lexa/version-check.json"))
+}
+
+fn fetch_latest_release_tag() -> Option<String> {
+    let url = format!("https://api.github.com/repos/{LEXA_REPO}/releases/latest");
+    let output = fetch_url(&url)?;
+    extract_json_string_field(&output, "tag_name")
+}
+
+#[cfg(not(windows))]
+fn fetch_url(url: &str) -> Option<String> {
+    let output = std::process::Command::new("curl")
+        .arg("-fsSL")
+        .arg("--max-time")
+        .arg("1")
+        .arg("-H")
+        .arg("User-Agent: lexa")
+        .arg(url)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+#[cfg(windows)]
+fn fetch_url(url: &str) -> Option<String> {
+    let output = std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(format!(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+             (Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Headers @{{'User-Agent'='lexa'}} -Uri '{}').Content",
+            url.replace('\'', "''")
+        ))
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{field}\"");
+    let after_field = json.split(&needle).nth(1)?;
+    let after_colon = after_field.split_once(':')?.1.trim_start();
+    let value = after_colon.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(value[..end].to_string())
+}
+
+fn version_is_newer(candidate: &str, current: &str) -> bool {
+    let candidate = parse_version_numbers(candidate);
+    let current = parse_version_numbers(current);
+    candidate > current
+}
+
+fn parse_version_numbers(version: &str) -> Vec<u64> {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .split(['.', '-', '+'])
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs()
+}
+
 #[cfg(not(windows))]
 fn cmd_upgrade_unix(version: &str, install_dir: &std::path::Path, cli: &Cli) -> Result<()> {
     let script = r#"curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- "$1""#;
@@ -1579,7 +1910,7 @@ fn parse_line_range(range: &str) -> Result<(Option<u32>, Option<u32>)> {
     }
 }
 
-fn cmd_query(pipeline: &[String], cli: &Cli) -> Result<()> {
+fn cmd_pipeline(pipeline: &[String], cli: &Cli) -> Result<()> {
     let engine = load_engine(cli);
     let pipeline_str = pipeline.join(" ");
     let output = pipeline::run_output(&engine, &pipeline_str);
@@ -1686,16 +2017,23 @@ mod tests {
     }
 
     #[test]
+    fn version_comparison_detects_newer_release_tags() {
+        assert!(version_is_newer("v0.5.2", "0.5.1"));
+        assert!(!version_is_newer("v0.5.1", "0.5.1"));
+        assert!(!version_is_newer("v0.4.9", "0.5.1"));
+    }
+
+    #[test]
     fn mcp_defaults_to_refresh_with_standard_debounce() {
         let cli = Cli::try_parse_from(["lexa", "mcp", "."]).unwrap();
 
         match cli.command {
-            Commands::Mcp {
+            Some(Commands::Mcp {
                 no_refresh,
                 debounce,
                 structured_content,
                 ..
-            } => {
+            }) => {
                 assert!(!no_refresh);
                 assert_eq!(debounce, 500);
                 assert!(!structured_content);
@@ -1710,12 +2048,12 @@ mod tests {
             Cli::try_parse_from(["lexa", "mcp", ".", "--no-refresh", "--debounce", "250"]).unwrap();
 
         match cli.command {
-            Commands::Mcp {
+            Some(Commands::Mcp {
                 no_refresh,
                 debounce,
                 structured_content,
                 ..
-            } => {
+            }) => {
                 assert!(no_refresh);
                 assert_eq!(debounce, 250);
                 assert!(!structured_content);
@@ -1730,9 +2068,9 @@ mod tests {
             let cli = Cli::try_parse_from(["lexa", "mcp", ".", flag]).unwrap();
 
             match cli.command {
-                Commands::Mcp {
+                Some(Commands::Mcp {
                     structured_content, ..
-                } => assert!(structured_content),
+                }) => assert!(structured_content),
                 _ => panic!("expected mcp command"),
             }
         }
@@ -1744,9 +2082,9 @@ mod tests {
 
         assert!(cli.json);
         match cli.command {
-            Commands::Mcp {
+            Some(Commands::Mcp {
                 structured_content, ..
-            } => assert!(!structured_content),
+            }) => assert!(!structured_content),
             _ => panic!("expected mcp command"),
         }
     }

@@ -25,6 +25,16 @@ pub struct SearchOptions {
     pub path_glob: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct FileFilterOptions {
+    pub path_prefix: Option<String>,
+    pub path_glob: Option<String>,
+    pub language: Option<String>,
+    pub min_lines: Option<u32>,
+    pub max_lines: Option<u32>,
+    pub max_results: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RichSearchResult {
     pub path: String,
@@ -45,8 +55,19 @@ pub struct ContextDetails {
     pub task: String,
     pub keywords: Vec<String>,
     pub max_results: usize,
+    pub confidence: String,
+    pub note: Option<String>,
+    pub suggested_next_steps: Vec<String>,
     pub relevant_symbols: Vec<ContextSymbol>,
     pub snippets: Vec<SearchResult>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ContextOptions {
+    pub max_results: usize,
+    pub path_prefix: Option<String>,
+    pub path_glob: Option<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -60,6 +81,18 @@ pub struct ContextSymbol {
     pub content_line_start: u32,
     pub content_line_end: u32,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SymbolSearchResult {
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub detail: Option<String>,
+    pub score: f32,
+    pub raw_score: i32,
 }
 
 struct ScoredSearchResult {
@@ -345,6 +378,69 @@ impl Engine {
             .collect()
     }
 
+    pub fn fuzzy_symbols(&self, query: &str, max_results: usize) -> Vec<SymbolSearchResult> {
+        let query_norm = context_normalize(query);
+        if query_norm.is_empty() {
+            return Vec::new();
+        }
+
+        let mut scored = Vec::new();
+        for (path, outline) in &self.outlines {
+            for symbol in &outline.symbols {
+                if symbol.kind == SymbolKind::Import {
+                    continue;
+                }
+                let symbol_norm = context_normalize(&symbol.name);
+                let path_norm = context_normalize(path);
+                let mut score = symbol_kind_context_score(symbol.kind);
+
+                if symbol_norm == query_norm {
+                    score += 1000;
+                } else if symbol_norm.contains(&query_norm) {
+                    score += 700;
+                } else if query_norm.contains(&symbol_norm) && symbol_norm.len() >= 4 {
+                    score += 320;
+                } else if fuzzy_match_score(&query_norm, &symbol_norm).is_some() {
+                    score += 220;
+                } else {
+                    continue;
+                }
+
+                if path_norm.contains(&query_norm) {
+                    score += 80;
+                }
+                if is_test_like_path(path) {
+                    score -= 60;
+                }
+
+                scored.push((score, path.clone(), symbol.clone()));
+            }
+        }
+
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.line_start.cmp(&b.2.line_start))
+                .then_with(|| a.2.name.cmp(&b.2.name))
+        });
+
+        let max_score = scored.first().map(|entry| entry.0.max(1)).unwrap_or(1) as f32;
+        scored
+            .into_iter()
+            .take(max_results)
+            .map(|(raw_score, path, symbol)| SymbolSearchResult {
+                path,
+                name: symbol.name,
+                kind: symbol.kind.to_string(),
+                line_start: symbol.line_start,
+                line_end: symbol.line_end,
+                detail: symbol.detail,
+                score: raw_score as f32 / max_score,
+                raw_score,
+            })
+            .collect()
+    }
+
     pub fn search(&self, query: &str, max_results: usize) -> Vec<SearchResult> {
         let query_lower = query.to_lowercase();
         let words: Vec<&str> = query_lower.split_whitespace().collect();
@@ -622,6 +718,46 @@ impl Engine {
             .collect()
     }
 
+    pub fn filtered_files(
+        &self,
+        options: &FileFilterOptions,
+    ) -> (Vec<(String, FileMeta)>, usize, bool) {
+        let language = options.language.as_ref().map(|value| value.to_lowercase());
+        let path_prefix = options
+            .path_prefix
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(normalize_filter_prefix);
+
+        let mut entries =
+            self.file_map()
+                .into_iter()
+                .filter(|(path, meta)| {
+                    path_prefix.as_ref().is_none_or(|prefix| {
+                        path == prefix || path.starts_with(&format!("{prefix}/"))
+                    }) && options
+                        .path_glob
+                        .as_deref()
+                        .is_none_or(|glob| match_glob(glob, path))
+                        && language
+                            .as_deref()
+                            .is_none_or(|language| meta.language.as_str() == language)
+                        && options
+                            .min_lines
+                            .is_none_or(|min_lines| meta.line_count >= min_lines)
+                        && options
+                            .max_lines
+                            .is_none_or(|max_lines| meta.line_count <= max_lines)
+                })
+                .collect::<Vec<_>>();
+        let total = entries.len();
+        if let Some(max_results) = options.max_results {
+            entries.truncate(max_results);
+        }
+        let truncated = entries.len() < total;
+        (entries, total, truncated)
+    }
+
     pub fn get_imported_by(&self, path: &str) -> Vec<String> {
         self.dep_graph.get_imported_by(path)
     }
@@ -705,58 +841,112 @@ impl Engine {
 
     pub fn build_context(&self, task: &str, max_results: usize) -> String {
         let details = self.build_context_details(task, max_results);
-
-        let mut output = String::new();
-        output.push_str(&format!("## Context for: {}\n\n", task));
-
-        if !details.relevant_symbols.is_empty() {
-            output.push_str("### Relevant Symbols\n\n");
-            for sym in &details.relevant_symbols {
-                output.push_str(&format!(
-                    "- {} ({}): {}:{}-{}\n",
-                    sym.name, sym.kind, sym.path, sym.line_start, sym.line_end
-                ));
-            }
-            output.push('\n');
-
-            output.push_str("### Relevant Symbol Bodies\n\n");
-            for sym in &details.relevant_symbols {
-                output.push_str(&format!(
-                    "#### {}:{}-{} {}\n\n",
-                    sym.path, sym.content_line_start, sym.content_line_end, sym.name
-                ));
-                output.push_str("```text\n");
-                output.push_str(&sym.content);
-                if !sym.content.ends_with('\n') {
-                    output.push('\n');
-                }
-                output.push_str("```\n\n");
-            }
-        }
-
-        if !details.snippets.is_empty() {
-            output.push_str("### Relevant Code Snippets\n\n");
-            for result in &details.snippets {
-                output.push_str(&format!(
-                    "{}:{}: {}\n",
-                    result.path, result.line_num, result.line_text
-                ));
-            }
-        }
-
-        output
+        render_context_details(&details)
     }
 
-    pub fn build_context_details(&self, task: &str, max_results: usize) -> ContextDetails {
-        let keywords = context_keywords(task);
-        let relevant_symbols = self.ranked_context_symbols(&keywords, 5);
+    pub fn build_context_with_options(&self, task: &str, options: &ContextOptions) -> String {
+        let details = self.build_context_details_with_options(task, options);
+        render_context_details(&details)
+    }
+}
 
-        let mut snippets = self.ranked_context_snippets(&keywords, &relevant_symbols, max_results);
+fn render_context_details(details: &ContextDetails) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("## Context for: {}\n\n", details.task));
+    if let Some(note) = &details.note {
+        output.push_str(&format!("{}\n\n", note));
+    }
+    if !details.suggested_next_steps.is_empty() {
+        output.push_str("### Suggested Next Steps\n\n");
+        for step in &details.suggested_next_steps {
+            output.push_str(&format!("- {step}\n"));
+        }
+        output.push('\n');
+    }
+
+    if !details.relevant_symbols.is_empty() {
+        output.push_str("### Relevant Symbols\n\n");
+        for sym in &details.relevant_symbols {
+            output.push_str(&format!(
+                "- {} ({}): {}:{}-{}\n",
+                sym.name, sym.kind, sym.path, sym.line_start, sym.line_end
+            ));
+        }
+        output.push('\n');
+
+        output.push_str("### Relevant Symbol Bodies\n\n");
+        for sym in &details.relevant_symbols {
+            output.push_str(&format!(
+                "#### {}:{}-{} {}\n\n",
+                sym.path, sym.content_line_start, sym.content_line_end, sym.name
+            ));
+            output.push_str("```text\n");
+            output.push_str(&sym.content);
+            if !sym.content.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str("```\n\n");
+        }
+    }
+
+    if !details.snippets.is_empty() {
+        output.push_str("### Relevant Code Snippets\n\n");
+        for result in &details.snippets {
+            output.push_str(&format!(
+                "{}:{}: {}\n",
+                result.path, result.line_num, result.line_text
+            ));
+        }
+    }
+
+    output
+}
+
+impl Engine {
+    pub fn build_context_details(&self, task: &str, max_results: usize) -> ContextDetails {
+        self.build_context_details_with_options(
+            task,
+            &ContextOptions {
+                max_results,
+                ..ContextOptions::default()
+            },
+        )
+    }
+
+    pub fn build_context_details_with_options(
+        &self,
+        task: &str,
+        options: &ContextOptions,
+    ) -> ContextDetails {
+        let keywords = context_keywords(task);
+        let max_results = options.max_results.max(1);
+        let relevant_symbols = self.ranked_context_symbols(&keywords, options, 5);
+
+        let mut snippets =
+            self.ranked_context_snippets(&keywords, &relevant_symbols, options, max_results);
+        let explicit_query = context_query_is_explicit(task);
 
         ContextDetails {
             task: task.to_string(),
             keywords,
             max_results,
+            confidence: if explicit_query {
+                "medium".to_string()
+            } else {
+                "low".to_string()
+            },
+            note: (!explicit_query).then(|| {
+                "Low-confidence brief: this tool bundles context from explicit symbols, path fragments, and scoped keywords; it is not natural-language QA.".to_string()
+            }),
+            suggested_next_steps: if explicit_query {
+                Vec::new()
+            } else {
+                vec![
+                    "Add --path-prefix or --path-glob to scope the search.".to_string(),
+                    "Run symbol-search for likely symbol names.".to_string(),
+                    "Run text-search for concrete terms from the task.".to_string(),
+                ]
+            },
             relevant_symbols,
             snippets: std::mem::take(&mut snippets),
         }
@@ -765,6 +955,7 @@ impl Engine {
     fn ranked_context_symbols(
         &self,
         keywords: &[String],
+        options: &ContextOptions,
         max_symbols: usize,
     ) -> Vec<ContextSymbol> {
         let mut scored: Vec<ScoredContextSymbol> = Vec::new();
@@ -772,6 +963,9 @@ impl Engine {
 
         for keyword in keywords {
             for result in self.find_symbol(keyword) {
+                if !self.context_path_allowed(&result.path, options) {
+                    continue;
+                }
                 push_context_symbol_candidate(
                     &mut scored,
                     &mut seen,
@@ -781,6 +975,9 @@ impl Engine {
             }
 
             for (path, outline) in &self.outlines {
+                if !self.context_path_allowed(path, options) {
+                    continue;
+                }
                 for symbol in &outline.symbols {
                     if !symbol.name.eq_ignore_ascii_case(keyword) {
                         continue;
@@ -809,6 +1006,9 @@ impl Engine {
             }
 
             for (path, path_score) in self.fuzzy_find(keyword, 5) {
+                if !self.context_path_allowed(&path, options) {
+                    continue;
+                }
                 let Some(outline) = self.outlines.get(&path) else {
                     continue;
                 };
@@ -826,6 +1026,28 @@ impl Engine {
                         continue;
                     }
                     push_context_symbol_candidate(&mut scored, &mut seen, score, result);
+                }
+            }
+        }
+
+        let core_terms = context_core_terms(keywords);
+        if !core_terms.is_empty() {
+            for (path, outline) in &self.outlines {
+                if !self.context_path_allowed(path, options) {
+                    continue;
+                }
+                for symbol in &outline.symbols {
+                    if symbol.kind == SymbolKind::Import {
+                        continue;
+                    }
+                    let result = SymbolResult {
+                        path: path.clone(),
+                        symbol: symbol.clone(),
+                    };
+                    let score = self.context_multi_term_symbol_score(&result, &core_terms);
+                    if score >= 260 {
+                        push_context_symbol_candidate(&mut scored, &mut seen, score, result);
+                    }
                 }
             }
         }
@@ -955,6 +1177,32 @@ impl Engine {
             }
         }
 
+        let core_terms = context_core_terms(keywords);
+        if !core_terms.is_empty() {
+            let symbol_core_matches = core_terms
+                .iter()
+                .filter(|term| symbol_norm.contains(term.as_str()))
+                .count();
+            let path_core_matches = core_terms
+                .iter()
+                .filter(|term| path_norm.contains(term.as_str()))
+                .count();
+            if symbol_core_matches == 0 {
+                score -= 1000;
+            } else if symbol_core_matches == 1 && path_core_matches == 0 && core_terms.len() >= 3 {
+                score -= 1200;
+            } else if symbol_core_matches >= 2 {
+                score += 600;
+            } else if path_core_matches >= 1 {
+                score += 200;
+            }
+            if symbol_core_matches == 0 && path_core_matches < 2 {
+                score -= 360;
+            } else {
+                score += (symbol_core_matches as i32 * 90) + (path_core_matches as i32 * 25);
+            }
+        }
+
         if is_test_like_path(&result.path) {
             score -= 60;
         }
@@ -962,16 +1210,62 @@ impl Engine {
         score
     }
 
+    fn context_multi_term_symbol_score(&self, result: &SymbolResult, terms: &[String]) -> i32 {
+        let symbol_norm = context_normalize(&result.symbol.name);
+        let path_norm = context_normalize(&result.path);
+        let mut matched_symbol_terms = 0;
+        let mut matched_path_terms = 0;
+        let mut score = symbol_kind_context_score(result.symbol.kind);
+
+        for term in terms {
+            if symbol_norm.contains(term) {
+                matched_symbol_terms += 1;
+                score += 120;
+            }
+            if path_norm.contains(term) {
+                matched_path_terms += 1;
+                score += 55;
+            }
+        }
+
+        if matched_symbol_terms == 0 && matched_path_terms < 2 {
+            return 0;
+        }
+        if matched_symbol_terms + matched_path_terms < 2 {
+            return 0;
+        }
+        if matches!(
+            result.symbol.kind,
+            SymbolKind::Function | SymbolKind::Method
+        ) {
+            score += 120;
+        }
+        if symbol_norm.starts_with("create") || symbol_norm.starts_with("run") {
+            score += 140;
+        }
+        if symbol_norm.contains("runtime") {
+            score += 80;
+        }
+        if is_test_like_path(&result.path) {
+            score -= 60;
+        }
+        score
+    }
+
     fn ranked_context_snippets(
         &self,
         keywords: &[String],
         relevant_symbols: &[ContextSymbol],
+        options: &ContextOptions,
         max_results: usize,
     ) -> Vec<SearchResult> {
         let mut scored: Vec<ScoredSearchResult> = Vec::new();
         for keyword in keywords {
             let results = self.search(keyword, 8);
             for result in results {
+                if !self.context_path_allowed(&result.path, options) {
+                    continue;
+                }
                 if scored
                     .iter()
                     .any(|x| x.result.path == result.path && x.result.line_num == result.line_num)
@@ -993,6 +1287,35 @@ impl Engine {
             .take(max_results)
             .map(|entry| entry.result)
             .collect()
+    }
+
+    fn context_path_allowed(&self, path: &str, options: &ContextOptions) -> bool {
+        if let Some(prefix) = options
+            .path_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+            .map(normalize_filter_prefix)
+        {
+            if path != prefix && !path.starts_with(&format!("{prefix}/")) {
+                return false;
+            }
+        }
+        if let Some(glob) = options.path_glob.as_deref() {
+            if !match_glob(glob, path) {
+                return false;
+            }
+        }
+        if let Some(language) = options.language.as_deref() {
+            let language = language.to_lowercase();
+            if self
+                .file_meta
+                .get(path)
+                .is_none_or(|meta| meta.language.as_str() != language)
+            {
+                return false;
+            }
+        }
+        true
     }
 
     fn context_snippet_score(
@@ -1650,6 +1973,15 @@ fn context_keywords(task: &str) -> Vec<String> {
     keywords
 }
 
+fn context_query_is_explicit(task: &str) -> bool {
+    !quoted_segments(task).is_empty()
+        || context_tokens(task).into_iter().any(|token| {
+            token.contains(['_', '-', '/', '.', ':'])
+                || has_lower_to_upper_transition(&token)
+                || token.chars().any(|ch| ch.is_ascii_digit())
+        })
+}
+
 fn quoted_segments(text: &str) -> Vec<String> {
     let mut segments = Vec::new();
     let mut chars = text.char_indices().peekable();
@@ -1816,6 +2148,34 @@ fn context_terms(keywords: &[String]) -> Vec<String> {
         }
     }
     terms
+}
+
+fn context_core_terms(keywords: &[String]) -> Vec<String> {
+    context_terms(keywords)
+        .into_iter()
+        .filter(|term| {
+            (term.len() >= 4 || term == "run")
+                && !matches!(
+                    term.as_str(),
+                    "what"
+                        | "when"
+                        | "where"
+                        | "which"
+                        | "with"
+                        | "this"
+                        | "that"
+                        | "from"
+                        | "into"
+                        | "does"
+                        | "work"
+                        | "works"
+                        | "look"
+                        | "find"
+                        | "show"
+                        | "application"
+                )
+        })
+        .collect()
 }
 
 fn context_normalize(value: &str) -> String {
@@ -2261,6 +2621,10 @@ fn extract_include(raw: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+fn normalize_filter_prefix(prefix: &str) -> String {
+    prefix.trim_matches('/').to_string()
+}
+
 fn normalize_import_term(term: &str) -> String {
     let normalized = term
         .trim()
@@ -2485,6 +2849,11 @@ fn fuzzy_match(pattern: &[char], text: &str) -> Option<f32> {
     } else {
         None
     }
+}
+
+fn fuzzy_match_score(pattern: &str, text: &str) -> Option<f32> {
+    let chars = pattern.chars().collect::<Vec<_>>();
+    fuzzy_match(&chars, text)
 }
 
 impl Default for Engine {
@@ -2843,6 +3212,42 @@ mod tests {
     }
 
     #[test]
+    fn brief_marks_vague_natural_language_as_low_confidence() {
+        let engine = Engine::new(4);
+
+        let details = engine.build_context_details("how does this system work", 5);
+
+        assert_eq!(details.confidence, "low");
+        assert!(details
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("not natural-language QA"));
+        assert!(details
+            .suggested_next_steps
+            .iter()
+            .any(|step| step.contains("symbol-search")));
+    }
+
+    #[test]
+    fn fuzzy_symbols_finds_partial_symbol_names() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/runtime.ts",
+            "export function createAgentRuntimeForRun() {}\nexport function createProjectAgent() {}\n",
+        );
+
+        let results = engine.fuzzy_symbols("createAgent", 5);
+
+        assert!(results
+            .iter()
+            .any(|result| result.name == "createAgentRuntimeForRun"));
+        assert!(results
+            .iter()
+            .any(|result| result.name == "createProjectAgent"));
+    }
+
+    #[test]
     fn brief_bounds_large_symbol_bodies() {
         let mut engine = Engine::new(4);
         let mut content = String::from("export function useTerminalSession() {\n");
@@ -2862,6 +3267,32 @@ mod tests {
         );
         assert!(symbol.content.contains("const value118"));
         assert!(!symbol.content.contains("const value180"));
+    }
+
+    #[test]
+    fn filtered_files_supports_path_language_line_and_limit_filters() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/a.ts", "export const a = 1;\n");
+        engine.index_file(
+            "src/deep/b.ts",
+            "export const b = 1;\nexport const c = 2;\n",
+        );
+        engine.index_file("src/readme.md", "# Readme\n\nbody\n");
+        engine.index_file("packages/pkg/index.ts", "export const pkg = 1;\n");
+
+        let (files, total, truncated) = engine.filtered_files(&FileFilterOptions {
+            path_prefix: Some("src".to_string()),
+            path_glob: Some("**/*.ts".to_string()),
+            language: Some("typescript".to_string()),
+            min_lines: Some(1),
+            max_lines: Some(2),
+            max_results: Some(1),
+        });
+
+        assert_eq!(total, 2);
+        assert!(truncated);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "src/a.ts");
     }
 
     #[test]

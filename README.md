@@ -82,6 +82,16 @@ lexa upgrade --install-dir "$HOME/.local/bin"
 running `lexa`, unless `--install-dir` or `LEXA_INSTALL_DIR` is set. To refresh a
 project's graph, run `lexa index .`.
 
+Check the installed version:
+
+```bash
+lexa --version
+```
+
+`--version` prints the current binary version and, when possible, uses a short
+cached GitHub release check to report whether `lexa upgrade` is available. Set
+`LEXA_NO_UPDATE_CHECK=1` to disable this check.
+
 Or build without installing:
 
 ```bash
@@ -108,8 +118,9 @@ lexa symbol-defs Engine
 lexa read src/main.rs -L 1-80
 ```
 
-`index` writes the graph to `.lexa/graph.lexa` by default. Commands run from the
-project root will read that graph automatically.
+`index` writes the graph to `.lexa/graph.lexa` by default and shows a branded
+banner in interactive terminals. Commands run from the project root will read
+that graph automatically.
 
 Use a custom graph path:
 
@@ -123,17 +134,20 @@ lexa --graph /tmp/project.graph.lexa text-search "Parser"
 | Command | Purpose |
 | --- | --- |
 | `index <path>` | Index a project and write a graph |
-| `files [path]` | Show indexed files |
+| `reindex [path]` | Rebuild the project graph |
+| `clear-index` | Remove the project graph |
+| `files [path]` | Show indexed files, optionally filtered |
 | `list [path]` | List directory children |
 | `glob <pattern>` | Match indexed paths |
 | `path-search <pattern>` | Fuzzy path search |
 | `text-search <query>` | Search indexed text |
 | `outline <path>` | Show imports and symbols |
 | `symbol-defs <name>` | Find exact symbol definitions |
-| `word-refs <word>` | Find exact word or identifier references |
-| `callers <name>` | Find non-definition call sites |
-| `trace-deps <path>` | Trace parsed imports |
-| `brief <task>` | Build task-focused context |
+| `symbol-search <query>` | Fuzzy symbol search |
+| `word-refs <word>` | Find exact word or identifier occurrences, including definitions |
+| `callers <name>` | Find non-definition call sites/usages |
+| `trace-deps <path>` | Trace resolved project-file imports |
+| `brief <task>` | Bundle context for an explicit code task |
 | `read <path>` | Read a file or line range |
 | `patch <path> <op>` | Apply a line-based edit |
 | `create <path>` | Create a file safely |
@@ -153,7 +167,45 @@ lexa text-search "render" --scope
 lexa text-search --regex "render[A-Z]\\w+"
 lexa text-search "useEffect" --path-glob "**/*.{ts,tsx}"
 lexa text-search "TODO" --compact --paths-only
+lexa symbol-search createAgent
 ```
+
+Useful file listing flags:
+
+```bash
+lexa files apps/desktop --language typescript
+lexa files --path-glob "**/*.{ts,tsx}" --max-lines 200
+lexa files packages --min-lines 100 --max-results 20
+```
+
+`files [path]` treats `path` as a project-relative prefix. Use `list [path]`
+when you want only immediate directory children.
+
+`word-refs` includes declarations and definitions. `callers` is narrower: it
+returns non-definition call sites/usages and skips declaration-like occurrences
+such as type aliases. `trace-deps` reports resolved project files; external
+packages are not returned as dependency nodes, and unresolved local imports are
+reported separately for `depends_on`.
+
+Use `brief` as a context bundler with explicit symbols, path fragments, or
+scoped keywords. It is not a natural-language QA tool:
+
+```bash
+lexa brief createAgentRuntimeForRun
+lexa brief "terminal session" --path-prefix apps/desktop
+lexa brief "createProjectAgent packages/agents" --path-prefix packages/agents --max 8
+```
+
+If a brief query is vague, Lexa marks it low-confidence and suggests concrete
+next steps such as `symbol-search`, `text-search`, or adding scope filters.
+
+`pipeline` supports `glob/find`, `fuzzy/path_search`, `search/text_search`,
+`filter`, `outline`, `deps`, `read`, `sort`, `limit`, and `count`. The pipe
+string form is intended for advanced CLI use. MCP clients should prefer the
+`steps` array form, where each array item is one pipeline step.
+For MCP pipeline calls, put search terms inside the step itself:
+`{"steps":["search AgentRunRequest","limit 3"]}`. Alternatively, pass the full
+pipe string as `pipeline`: `{"pipeline":"search AgentRunRequest | limit 3"}`.
 
 MCP omits duplicated `structuredContent` by default to reduce token use. Start with `lexa mcp . --structured-content` or `lexa mcp . --json` when a client needs JSON structured tool results.
 
@@ -206,6 +258,11 @@ JSON and MCP output include both the compatibility-preserving flat `findings`
 array and grouped buckets under `groups`: `primary`, `secondary`, `actionable`,
 `candidates`, `risk_notes`, and `expected`. Agents should summarize from
 `groups` first and use `findings` only for full-detail traversal.
+
+For MCP audit calls, `max_results` controls the number of returned findings.
+`max` is accepted as a compatibility alias, with `max_results` taking
+precedence when both are present. `config` is a TOML file path, not a named
+preset; strict mode is a separate CLI flag.
 
 Dead-code candidates are limited to source-code symbols by default. Lexa skips
 style sheets, data/config files, package manifests, common framework config
