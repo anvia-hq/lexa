@@ -267,12 +267,12 @@ fn parse_package_json(path: &str, source: &str) -> FileOutline {
                 line_num,
                 Some("npm script".to_string()),
             ),
-            Some("dependencies") | Some("devDependencies") | Some("peerDependencies") => push(
+            Some(section @ ("dependencies" | "devDependencies" | "peerDependencies")) => push(
                 &mut outline,
                 name,
                 SymbolKind::Constant,
                 line_num,
-                Some(manifest_dependency_detail(active_section.as_deref().unwrap()).to_string()),
+                Some(manifest_dependency_detail(section).to_string()),
             ),
             Some("exports") | Some("bin") => push(
                 &mut outline,

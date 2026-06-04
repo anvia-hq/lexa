@@ -1,17 +1,16 @@
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use lexa::engine::{self, ContextOptions, FileFilterOptions, SearchOptions};
+use lexa::output::{format_unix_ms_utc, rich_results_json};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
 use lexa::{audit, edit, freshness, mcp, pipeline, snapshot, store};
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::IsTerminal;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_GRAPH_PATH: &str = ".lexa/graph.lexa";
-const LEXA_REPO: &str = "anvia-hq/lexa";
-const VERSION_CACHE_TTL_SECS: u64 = 60 * 60 * 12;
+
+mod cli_upgrade;
 
 #[derive(Parser)]
 #[command(
@@ -311,7 +310,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.version {
-        return cmd_version(&cli);
+        return cli_upgrade::cmd_version(cli.json);
     }
 
     let Some(command) = &cli.command else {
@@ -461,7 +460,7 @@ fn main() -> Result<()> {
         Commands::Upgrade {
             version,
             install_dir,
-        } => cmd_upgrade(version, install_dir.as_ref(), &cli),
+        } => cli_upgrade::cmd_upgrade(version, install_dir.as_ref(), cli.json),
         Commands::Watch { path, debounce } => cmd_watch(path, *debounce, &cli),
         Commands::Pipeline { pipeline } => cmd_pipeline(pipeline, &cli),
         Commands::Mcp {
@@ -485,32 +484,7 @@ fn project_graph_path(root: &std::path::Path, cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| root.join(DEFAULT_GRAPH_PATH))
 }
 
-fn cmd_version(cli: &Cli) -> Result<()> {
-    let current = env!("CARGO_PKG_VERSION");
-    let latest = latest_version_with_cache();
-    let update_available = latest
-        .as_deref()
-        .is_some_and(|latest| version_is_newer(latest, current));
-
-    if cli.json {
-        return print_json(json!({
-            "version": current,
-            "latest": latest,
-            "update_available": update_available,
-        }));
-    }
-
-    println!("lexa {current}");
-    if update_available {
-        if let Some(latest) = latest {
-            println!("update available: {latest}");
-            println!("run: lexa upgrade");
-        }
-    }
-    Ok(())
-}
-
-fn load_engine(cli: &Cli) -> engine::Engine {
+fn load_engine(cli: &Cli) -> Result<engine::Engine> {
     let mut engine = engine::Engine::new(16384);
 
     if !cli.no_graph {
@@ -521,7 +495,10 @@ fn load_engine(cli: &Cli) -> engine::Engine {
                     eprintln!("Loaded {} files from graph", count);
                 }
                 Err(e) => {
-                    eprintln!("Warning: Failed to load graph: {}", e);
+                    bail!(
+                        "failed to load graph {}: {e}. Run 'lexa reindex .' to rebuild it or 'lexa clear-index' to remove it.",
+                        path.display()
+                    );
                 }
             }
         } else {
@@ -532,7 +509,7 @@ fn load_engine(cli: &Cli) -> engine::Engine {
         }
     }
 
-    engine
+    Ok(engine)
 }
 
 fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> {
@@ -671,7 +648,7 @@ fn cmd_mcp(
 }
 
 fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
 
     let results = match engine.search_rich(query, &options) {
         Ok(results) => results,
@@ -727,7 +704,7 @@ fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let root = std::env::current_dir()?;
     let path = match normalize_project_path(&root, path, PathMode::Existing) {
         Ok(path) => path,
@@ -833,7 +810,7 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_symbol_search(query: &str, max: usize, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let results = engine.fuzzy_symbols(query, max);
 
     if cli.json {
@@ -874,7 +851,7 @@ fn cmd_symbol_search(query: &str, max: usize, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_symbol(name: &str, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let results = engine.find_symbol(name);
 
     if cli.json {
@@ -909,7 +886,7 @@ fn cmd_symbol(name: &str, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_word(word: &str, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let results = engine.search_word(word);
 
     if cli.json {
@@ -933,7 +910,7 @@ fn cmd_word(word: &str, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_find(pattern: &str, max: usize, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let results = engine.fuzzy_find(pattern, max);
 
     if cli.json {
@@ -962,7 +939,7 @@ fn cmd_find(pattern: &str, max: usize, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_tree(filters: FileFilterOptions, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let (files, total, truncated) = engine.filtered_files(&filters);
 
     if cli.json {
@@ -1011,7 +988,7 @@ fn cmd_tree(filters: FileFilterOptions, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let root = std::env::current_dir()?;
     let path = normalize_project_path(&root, path, PathMode::Existing)?;
 
@@ -1069,7 +1046,7 @@ fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()
 }
 
 fn cmd_hot(limit: usize, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let files = engine.get_hot_files(limit);
 
     if cli.json {
@@ -1107,7 +1084,7 @@ fn cmd_hot(limit: usize, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_callers(name: &str, max: usize, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let results = engine.find_callers(name, max);
 
     if cli.json {
@@ -1136,7 +1113,7 @@ fn cmd_callers(name: &str, max: usize, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_context(task: &str, options: ContextOptions, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let details = engine.build_context_details_with_options(task, &options);
     if cli.json {
         return print_json(json!(details));
@@ -1147,7 +1124,7 @@ fn cmd_context(task: &str, options: ContextOptions, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_changes(since: u64, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let changes = engine.get_changes(since);
 
     if cli.json {
@@ -1186,7 +1163,10 @@ fn cmd_read(
     show_hash: bool,
     cli: &Cli,
 ) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
+    if engine.file_count() == 0 {
+        bail!("no files indexed; run 'lexa index .' before running audit");
+    }
     let root = std::env::current_dir()?;
     let path = normalize_project_path(&root, path, PathMode::Existing)?;
 
@@ -1289,7 +1269,7 @@ fn cmd_edit(
     }
 
     if result.changed {
-        let mut engine = load_engine(cli);
+        let mut engine = load_engine(cli)?;
         engine.index_edited_file(&rel_path, &result.new_content, store_op(op));
         let snap_path = graph_path(cli);
         snapshot::write_snapshot(&engine, &snap_path)?;
@@ -1353,7 +1333,7 @@ fn cmd_create(
     let result = edit::create_file(&request)?;
 
     if !dry_run {
-        let mut engine = load_engine(cli);
+        let mut engine = load_engine(cli)?;
         engine.index_edited_file(&rel_path, &content, store::Op::Create);
         let snap_path = graph_path(cli);
         snapshot::write_snapshot(&engine, &snap_path)?;
@@ -1395,7 +1375,7 @@ fn store_op(op: edit::EditOp) -> store::Op {
 }
 
 fn cmd_glob(pattern: &str, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let results = engine.glob_files(pattern);
 
     if cli.json {
@@ -1419,7 +1399,7 @@ fn cmd_glob(pattern: &str, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_ls(path: &str, cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let entries = engine.list_dir(path);
 
     if cli.json {
@@ -1467,7 +1447,7 @@ fn cmd_ls(path: &str, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_status(cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let snap_path = graph_path(cli);
     let graph = if snap_path.exists() {
         let metadata = std::fs::metadata(&snap_path)?;
@@ -1527,7 +1507,7 @@ fn cmd_audit(
     include: &[AuditInclude],
     cli: &Cli,
 ) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let root = std::env::current_dir()?;
     let config = audit::load_audit_config(&root, config_path.map(PathBuf::as_path), no_config)?;
     let scope = if let Some(base) = since {
@@ -1571,247 +1551,6 @@ fn audit_includes(values: &[AuditInclude]) -> audit::AuditIncludes {
     audit::AuditIncludes {
         dead_code: values.contains(&AuditInclude::DeadCode),
     }
-}
-
-fn cmd_upgrade(version: &str, install_dir: Option<&PathBuf>, cli: &Cli) -> Result<()> {
-    validate_upgrade_version(version)?;
-    let install_dir = upgrade_install_dir(install_dir)?;
-
-    if cfg!(windows) {
-        return cmd_upgrade_windows(version, &install_dir, cli);
-    }
-
-    cmd_upgrade_unix(version, &install_dir, cli)
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct VersionCache {
-    checked_at: u64,
-    latest: String,
-}
-
-fn latest_version_with_cache() -> Option<String> {
-    if update_check_disabled() {
-        return None;
-    }
-
-    let cache_path = version_cache_path()?;
-    let now = unix_secs();
-    if let Ok(content) = std::fs::read_to_string(&cache_path) {
-        if let Ok(cache) = serde_json::from_str::<VersionCache>(&content) {
-            if now.saturating_sub(cache.checked_at) <= VERSION_CACHE_TTL_SECS {
-                return Some(cache.latest);
-            }
-        }
-    }
-
-    let latest = fetch_latest_release_tag()?;
-    if let Some(parent) = cache_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let cache = VersionCache {
-        checked_at: now,
-        latest: latest.clone(),
-    };
-    if let Ok(content) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(cache_path, content);
-    }
-    Some(latest)
-}
-
-fn update_check_disabled() -> bool {
-    std::env::var_os("LEXA_NO_UPDATE_CHECK").is_some()
-        || std::env::var_os("LEXA_SKIP_UPDATE_CHECK").is_some()
-        || std::env::var_os("NO_UPDATE_CHECK").is_some()
-}
-
-fn version_cache_path() -> Option<PathBuf> {
-    if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
-        return Some(PathBuf::from(cache_home).join("lexa/version-check.json"));
-    }
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        return Some(PathBuf::from(local_app_data).join("lexa/version-check.json"));
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".cache/lexa/version-check.json"))
-}
-
-fn fetch_latest_release_tag() -> Option<String> {
-    let url = format!("https://api.github.com/repos/{LEXA_REPO}/releases/latest");
-    let output = fetch_url(&url)?;
-    extract_json_string_field(&output, "tag_name")
-}
-
-#[cfg(not(windows))]
-fn fetch_url(url: &str) -> Option<String> {
-    let output = std::process::Command::new("curl")
-        .arg("-fsSL")
-        .arg("--max-time")
-        .arg("1")
-        .arg("-H")
-        .arg("User-Agent: lexa")
-        .arg(url)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
-}
-
-#[cfg(windows)]
-fn fetch_url(url: &str) -> Option<String> {
-    let output = std::process::Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg(format!(
-            "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
-             (Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Headers @{{'User-Agent'='lexa'}} -Uri '{}').Content",
-            url.replace('\'', "''")
-        ))
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
-}
-
-fn extract_json_string_field(json: &str, field: &str) -> Option<String> {
-    let needle = format!("\"{field}\"");
-    let after_field = json.split(&needle).nth(1)?;
-    let after_colon = after_field.split_once(':')?.1.trim_start();
-    let value = after_colon.strip_prefix('"')?;
-    let end = value.find('"')?;
-    Some(value[..end].to_string())
-}
-
-fn version_is_newer(candidate: &str, current: &str) -> bool {
-    let candidate = parse_version_numbers(candidate);
-    let current = parse_version_numbers(current);
-    candidate > current
-}
-
-fn parse_version_numbers(version: &str) -> Vec<u64> {
-    version
-        .trim()
-        .trim_start_matches('v')
-        .split(['.', '-', '+'])
-        .map(|part| part.parse::<u64>().unwrap_or(0))
-        .collect()
-}
-
-fn unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs()
-}
-
-#[cfg(not(windows))]
-fn cmd_upgrade_unix(version: &str, install_dir: &std::path::Path, cli: &Cli) -> Result<()> {
-    let script = r#"curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- "$1""#;
-    let mut command = std::process::Command::new("sh");
-    command
-        .arg("-c")
-        .arg(script)
-        .arg("lexa-upgrade")
-        .arg(version)
-        .env("LEXA_INSTALL_DIR", install_dir);
-
-    if cli.json {
-        let output = command.output().context("failed to run Lexa upgrade")?;
-        if !output.status.success() {
-            bail!(
-                "Lexa upgrade failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        return print_json(json!({
-            "operation": "upgrade",
-            "version": version,
-            "install_dir": install_dir.display().to_string(),
-            "status": "ok",
-            "stdout": String::from_utf8_lossy(&output.stdout),
-        }));
-    }
-
-    println!("Upgrading Lexa binary to {version}...");
-    println!("Install directory: {}", install_dir.display());
-    println!("Note: project indexes are updated with 'lexa index', not 'lexa upgrade'.");
-    let status = command.status().context("failed to run Lexa upgrade")?;
-    if !status.success() {
-        bail!("Lexa upgrade failed with status {status}");
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn cmd_upgrade_unix(_version: &str, _install_dir: &std::path::Path, _cli: &Cli) -> Result<()> {
-    unreachable!("cmd_upgrade_unix is only called on non-Windows platforms")
-}
-
-#[cfg(windows)]
-fn cmd_upgrade_windows(version: &str, install_dir: &std::path::Path, cli: &Cli) -> Result<()> {
-    if cli.json {
-        bail!("JSON output is not supported for Windows deferred upgrades");
-    }
-
-    let pid = std::process::id();
-    let escaped_version = version.replace('\'', "''");
-    let escaped_install_dir = install_dir.display().to_string().replace('\'', "''");
-    let command = format!(
-        "Wait-Process -Id {pid}; $env:LEXA_VERSION = '{escaped_version}'; $env:LEXA_INSTALL_DIR = '{escaped_install_dir}'; irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex"
-    );
-
-    std::process::Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-Command")
-        .arg(command)
-        .spawn()
-        .context("failed to start Lexa upgrade")?;
-
-    println!("Started Lexa binary upgrade to {version}.");
-    println!("Install directory: {}", install_dir.display());
-    println!("The updater will run after this lexa.exe process exits.");
-    println!("Note: project indexes are updated with 'lexa index', not 'lexa upgrade'.");
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn cmd_upgrade_windows(_version: &str, _install_dir: &std::path::Path, _cli: &Cli) -> Result<()> {
-    unreachable!("cmd_upgrade_windows is only called on Windows platforms")
-}
-
-fn upgrade_install_dir(install_dir: Option<&PathBuf>) -> Result<PathBuf> {
-    if let Some(dir) = install_dir {
-        return Ok(dir.clone());
-    }
-    if let Some(dir) = std::env::var_os("LEXA_INSTALL_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-
-    let current_exe = std::env::current_exe().context("failed to locate current lexa binary")?;
-    current_exe
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .context("failed to locate current lexa binary directory")
-}
-
-fn validate_upgrade_version(version: &str) -> Result<()> {
-    if version.is_empty() {
-        bail!("upgrade version must not be empty");
-    }
-    if version
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    {
-        return Ok(());
-    }
-    bail!("upgrade version must contain only letters, numbers, '.', '_', or '-'")
 }
 
 fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
@@ -1911,7 +1650,7 @@ fn parse_line_range(range: &str) -> Result<(Option<u32>, Option<u32>)> {
 }
 
 fn cmd_pipeline(pipeline: &[String], cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli);
+    let engine = load_engine(cli)?;
     let pipeline_str = pipeline.join(" ");
     let output = pipeline::run_output(&engine, &pipeline_str);
     let text = output.render();
@@ -1927,26 +1666,6 @@ fn print_json(value: serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn rich_results_json(results: &[engine::RichSearchResult]) -> Vec<serde_json::Value> {
-    results
-        .iter()
-        .map(|result| {
-            json!({
-                "path": &result.path,
-                "line": result.line_num,
-                "text": &result.line_text,
-                "scope": result.scope.as_ref().map(|scope| json!({
-                    "name": &scope.name,
-                    "kind": scope.kind.to_string(),
-                    "line_start": scope.line_start,
-                    "line_end": scope.line_end,
-                    "detail": &scope.detail,
-                })),
-            })
-        })
-        .collect()
-}
-
 fn edit_op_str(op: edit::EditOp) -> &'static str {
     match op {
         edit::EditOp::Replace => "replace",
@@ -1955,73 +1674,9 @@ fn edit_op_str(op: edit::EditOp) -> &'static str {
     }
 }
 
-fn format_unix_ms_utc(ms: u64) -> String {
-    if ms == 0 {
-        return "unknown".to_string();
-    }
-    let seconds = (ms / 1000) as i64;
-    let millis = ms % 1000;
-    let (year, month, day, hour, minute, second) = unix_seconds_to_utc(seconds);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-fn unix_seconds_to_utc(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = seconds.div_euclid(86_400);
-    let seconds_of_day = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let hour = (seconds_of_day / 3600) as u32;
-    let minute = ((seconds_of_day % 3600) / 60) as u32;
-    let second = (seconds_of_day % 60) as u32;
-    (year, month, day, hour, minute, second)
-}
-
-fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let mut year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    if month <= 2 {
-        year += 1;
-    }
-    (year, month as u32, day as u32)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn upgrade_version_validation_allows_release_tags() {
-        assert!(validate_upgrade_version("latest").is_ok());
-        assert!(validate_upgrade_version("v0.1.0").is_ok());
-        assert!(validate_upgrade_version("0.1.0").is_ok());
-    }
-
-    #[test]
-    fn upgrade_version_validation_rejects_shell_metacharacters() {
-        assert!(validate_upgrade_version("").is_err());
-        assert!(validate_upgrade_version("v0.1.0;rm").is_err());
-        assert!(validate_upgrade_version("$(echo bad)").is_err());
-    }
-
-    #[test]
-    fn upgrade_install_dir_prefers_explicit_value() {
-        let explicit = PathBuf::from("/tmp/lexa-explicit");
-
-        assert_eq!(upgrade_install_dir(Some(&explicit)).unwrap(), explicit);
-    }
-
-    #[test]
-    fn version_comparison_detects_newer_release_tags() {
-        assert!(version_is_newer("v0.5.2", "0.5.1"));
-        assert!(!version_is_newer("v0.5.1", "0.5.1"));
-        assert!(!version_is_newer("v0.4.9", "0.5.1"));
-    }
 
     #[test]
     fn mcp_defaults_to_refresh_with_standard_debounce() {
