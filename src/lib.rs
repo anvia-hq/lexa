@@ -6,6 +6,7 @@ pub mod freshness;
 pub(crate) mod glob;
 mod index;
 pub mod mcp;
+pub mod output;
 mod parser;
 pub mod pipeline;
 pub mod project_path;

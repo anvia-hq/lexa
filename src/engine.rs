@@ -14,6 +14,40 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_CONTEXT_SYMBOL_LINES: u32 = 120;
+const CONTEXT_EXACT_SYMBOL_BONUS: i32 = 500;
+const CONTEXT_CASE_INSENSITIVE_SYMBOL_BONUS: i32 = 450;
+const CONTEXT_INDEXED_SYMBOL_SOURCE_BONUS: i32 = 500;
+const CONTEXT_OUTLINE_SYMBOL_SOURCE_BONUS: i32 = 450;
+const CONTEXT_NORMALIZED_EXACT_BONUS: i32 = 420;
+const CONTEXT_NORMALIZED_CONTAINS_BONUS: i32 = 180;
+const CONTEXT_REVERSE_CONTAINS_BONUS: i32 = 80;
+const CONTEXT_CALLABLE_SUFFIX_BONUS: i32 = 320;
+const CONTEXT_PATH_KEYWORD_BONUS: i32 = 80;
+const CONTEXT_BASENAME_CALLABLE_BONUS: i32 = 520;
+const CONTEXT_NONCALLABLE_SHADOW_PENALTY: i32 = 260;
+const CONTEXT_SYMBOL_TERM_BONUS: i32 = 35;
+const CONTEXT_PATH_TERM_BONUS: i32 = 10;
+const CONTEXT_MULTI_TERM_CALLABLE_BONUS: i32 = 520;
+const CONTEXT_ACTION_NAME_BONUS: i32 = 260;
+const CONTEXT_NO_CORE_SYMBOL_PENALTY: i32 = 1000;
+const CONTEXT_WEAK_CORE_MATCH_PENALTY: i32 = 1200;
+const CONTEXT_STRONG_CORE_MATCH_BONUS: i32 = 600;
+const CONTEXT_PATH_CORE_MATCH_BONUS: i32 = 200;
+const CONTEXT_POOR_CORE_PATH_PENALTY: i32 = 360;
+const CONTEXT_SYMBOL_CORE_TERM_BONUS: i32 = 90;
+const CONTEXT_PATH_CORE_TERM_BONUS: i32 = 25;
+const CONTEXT_TEST_PATH_PENALTY: i32 = 60;
+const CONTEXT_MULTI_TERM_SYMBOL_BONUS: i32 = 120;
+const CONTEXT_MULTI_TERM_PATH_BONUS: i32 = 55;
+const CONTEXT_MULTI_TERM_CALLABLE_KIND_BONUS: i32 = 120;
+const CONTEXT_MULTI_TERM_ACTION_BONUS: i32 = 140;
+const CONTEXT_MULTI_TERM_RUNTIME_BONUS: i32 = 80;
+const CONTEXT_SNIPPET_LINE_MATCH_BONUS: i32 = 20;
+const CONTEXT_SNIPPET_WORD_MATCH_BONUS: i32 = 30;
+const CONTEXT_SNIPPET_PATH_MATCH_BONUS: i32 = 15;
+const CONTEXT_SNIPPET_RELEVANT_SYMBOL_BONUS: i32 = 40;
+const CONTEXT_SNIPPET_COMMENT_PENALTY: i32 = 20;
+const CONTEXT_SNIPPET_SHORT_KEYWORD_PENALTY: i32 = 10;
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchOptions {
@@ -969,7 +1003,8 @@ impl Engine {
                 push_context_symbol_candidate(
                     &mut scored,
                     &mut seen,
-                    self.context_symbol_score(keyword, &result, keywords) + 500,
+                    self.context_symbol_score(keyword, &result, keywords)
+                        + CONTEXT_INDEXED_SYMBOL_SOURCE_BONUS,
                     result,
                 );
             }
@@ -992,7 +1027,7 @@ impl Engine {
                                 symbol: symbol.clone(),
                             },
                             keywords,
-                        ) + 450,
+                        ) + CONTEXT_OUTLINE_SYMBOL_SOURCE_BONUS,
                         SymbolResult {
                             path: path.clone(),
                             symbol: symbol.clone(),
@@ -1113,34 +1148,34 @@ impl Engine {
         let mut score = symbol_kind_context_score(result.symbol.kind);
 
         if symbol_name == keyword {
-            score += 500;
+            score += CONTEXT_EXACT_SYMBOL_BONUS;
         } else if has_identifier_case_signal(keyword) && symbol_name.eq_ignore_ascii_case(keyword) {
-            score += 450;
+            score += CONTEXT_CASE_INSENSITIVE_SYMBOL_BONUS;
         }
 
         if !keyword_norm.is_empty() {
             if symbol_norm == keyword_norm {
-                score += 420;
+                score += CONTEXT_NORMALIZED_EXACT_BONUS;
             } else if symbol_norm.contains(&keyword_norm) {
-                score += 180;
+                score += CONTEXT_NORMALIZED_CONTAINS_BONUS;
             } else if keyword_norm.len() >= 5 && keyword_norm.contains(&symbol_norm) {
-                score += 80;
+                score += CONTEXT_REVERSE_CONTAINS_BONUS;
             }
 
             if callable
                 && symbol_norm.ends_with(&keyword_norm)
                 && symbol_norm.len() > keyword_norm.len()
             {
-                score += 320;
+                score += CONTEXT_CALLABLE_SUFFIX_BONUS;
             }
 
             if path_norm.contains(&keyword_norm) {
-                score += 80;
+                score += CONTEXT_PATH_KEYWORD_BONUS;
             }
         }
 
         if callable && !basename_norm.is_empty() && symbol_norm == basename_norm {
-            score += 520;
+            score += CONTEXT_BASENAME_CALLABLE_BONUS;
         }
 
         if !callable
@@ -1153,7 +1188,7 @@ impl Engine {
                 })
             })
         {
-            score -= 260;
+            score -= CONTEXT_NONCALLABLE_SHADOW_PENALTY;
         }
 
         let mut matched_context_terms = 0;
@@ -1163,17 +1198,17 @@ impl Engine {
             }
             if symbol_norm.contains(&term) {
                 matched_context_terms += 1;
-                score += 35;
+                score += CONTEXT_SYMBOL_TERM_BONUS;
             }
             if path_norm.contains(&term) {
-                score += 10;
+                score += CONTEXT_PATH_TERM_BONUS;
             }
         }
 
         if callable && matched_context_terms >= 2 {
-            score += 520;
+            score += CONTEXT_MULTI_TERM_CALLABLE_BONUS;
             if symbol_norm.starts_with("create") || symbol_norm.starts_with("use") {
-                score += 260;
+                score += CONTEXT_ACTION_NAME_BONUS;
             }
         }
 
@@ -1188,23 +1223,24 @@ impl Engine {
                 .filter(|term| path_norm.contains(term.as_str()))
                 .count();
             if symbol_core_matches == 0 {
-                score -= 1000;
+                score -= CONTEXT_NO_CORE_SYMBOL_PENALTY;
             } else if symbol_core_matches == 1 && path_core_matches == 0 && core_terms.len() >= 3 {
-                score -= 1200;
+                score -= CONTEXT_WEAK_CORE_MATCH_PENALTY;
             } else if symbol_core_matches >= 2 {
-                score += 600;
+                score += CONTEXT_STRONG_CORE_MATCH_BONUS;
             } else if path_core_matches >= 1 {
-                score += 200;
+                score += CONTEXT_PATH_CORE_MATCH_BONUS;
             }
             if symbol_core_matches == 0 && path_core_matches < 2 {
-                score -= 360;
+                score -= CONTEXT_POOR_CORE_PATH_PENALTY;
             } else {
-                score += (symbol_core_matches as i32 * 90) + (path_core_matches as i32 * 25);
+                score += (symbol_core_matches as i32 * CONTEXT_SYMBOL_CORE_TERM_BONUS)
+                    + (path_core_matches as i32 * CONTEXT_PATH_CORE_TERM_BONUS);
             }
         }
 
         if is_test_like_path(&result.path) {
-            score -= 60;
+            score -= CONTEXT_TEST_PATH_PENALTY;
         }
 
         score
@@ -1220,11 +1256,11 @@ impl Engine {
         for term in terms {
             if symbol_norm.contains(term) {
                 matched_symbol_terms += 1;
-                score += 120;
+                score += CONTEXT_MULTI_TERM_SYMBOL_BONUS;
             }
             if path_norm.contains(term) {
                 matched_path_terms += 1;
-                score += 55;
+                score += CONTEXT_MULTI_TERM_PATH_BONUS;
             }
         }
 
@@ -1238,16 +1274,16 @@ impl Engine {
             result.symbol.kind,
             SymbolKind::Function | SymbolKind::Method
         ) {
-            score += 120;
+            score += CONTEXT_MULTI_TERM_CALLABLE_KIND_BONUS;
         }
         if symbol_norm.starts_with("create") || symbol_norm.starts_with("run") {
-            score += 140;
+            score += CONTEXT_MULTI_TERM_ACTION_BONUS;
         }
         if symbol_norm.contains("runtime") {
-            score += 80;
+            score += CONTEXT_MULTI_TERM_RUNTIME_BONUS;
         }
         if is_test_like_path(&result.path) {
-            score -= 60;
+            score -= CONTEXT_TEST_PATH_PENALTY;
         }
         score
     }
@@ -1330,23 +1366,23 @@ impl Engine {
         let mut score = 0;
 
         if line_lower.contains(&keyword_lower) {
-            score += 20;
+            score += CONTEXT_SNIPPET_LINE_MATCH_BONUS;
         }
         if result
             .line_text
             .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
             .any(|word| word.eq_ignore_ascii_case(keyword))
         {
-            score += 30;
+            score += CONTEXT_SNIPPET_WORD_MATCH_BONUS;
         }
         if path_lower.contains(&keyword_lower) {
-            score += 15;
+            score += CONTEXT_SNIPPET_PATH_MATCH_BONUS;
         }
         if relevant_symbols
             .iter()
             .any(|symbol| symbol.path == result.path || symbol.name.eq_ignore_ascii_case(keyword))
         {
-            score += 40;
+            score += CONTEXT_SNIPPET_RELEVANT_SYMBOL_BONUS;
         }
 
         let language = self
@@ -1355,10 +1391,10 @@ impl Engine {
             .map(|meta| meta.language)
             .unwrap_or_else(|| detect_language(&result.path));
         if is_comment_or_blank(&result.line_text, language) {
-            score -= 20;
+            score -= CONTEXT_SNIPPET_COMMENT_PENALTY;
         }
         if keyword.len() <= 3 {
-            score -= 10;
+            score -= CONTEXT_SNIPPET_SHORT_KEYWORD_PENALTY;
         }
         score
     }
