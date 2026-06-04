@@ -4,6 +4,36 @@
 
 No changes yet.
 
+## v0.6.0 - 2026-06-04
+
+### Added
+
+- Added top-level `symbol_search` for fuzzy symbol discovery when exact `symbol_defs` is too strict.
+- Added `reindex` and `clear_index` MCP tools for explicit graph recovery.
+- Added architecture cycle detection to structural audit output.
+- Added `files` filtering by path, glob, language, and line-count bounds.
+
+### Changed
+
+- Removed the legacy MCP `pipeline.query` argument; pipeline now accepts `pipeline` or `steps`.
+- Made `brief` explicit about its scope as a context bundle for symbols, paths, and scoped keywords rather than natural-language QA.
+- Improved `brief` ranking and body extraction for relevant definitions.
+- Made `lexa index` print a lightweight branded banner in interactive terminals.
+- Moved CLI upgrade/version-check code into a dedicated module and centralized shared output formatting.
+
+### Fixed
+
+- Prevented invalid graph snapshots from silently loading as an empty index and producing misleading command results.
+- Made `audit` refuse to run when no files are indexed.
+- Added header-first snapshot validation so incompatible graph versions fail before payload decoding.
+- Cleaned `outline` output by keeping imports out of the symbol list and improving missing-file/config error messages.
+- Improved JSON outline classification consistency and removed an avoidable package manifest parser unwrap.
+- Named `brief` scoring weights to make future ranking changes easier to review.
+
+### Tests
+
+- Added regression coverage for snapshot header validation, graph-loading behavior, pipeline schema cleanup, fuzzy symbol search, outline import filtering, and parser edge cases.
+
 ## v0.5.1 - 2026-06-04
 
 ### Fixed
