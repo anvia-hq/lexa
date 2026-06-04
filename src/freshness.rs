@@ -44,13 +44,18 @@ pub fn refresh_project(engine: &mut Engine, root: impl AsRef<Path>) -> Result<Re
             continue;
         }
 
-        let abs_path = root.join(&file.path);
-        let content = std::fs::read_to_string(&abs_path)?;
-        if indexed.contains_key(&file.path) && indexed_content_matches(engine, &file.path, &content)
-        {
-            continue;
+        if file.indexable {
+            let abs_path = root.join(&file.path);
+            let content = std::fs::read_to_string(&abs_path)?;
+            if indexed.contains_key(&file.path)
+                && indexed_content_matches(engine, &file.path, &content)
+            {
+                continue;
+            }
+            engine.index_file_with_modified(&file.path, &content, file.modified_ms);
+        } else {
+            engine.index_file_meta_only(&file.path, file.byte_size, file.modified_ms);
         }
-        engine.index_file_with_modified(&file.path, &content, file.modified_ms);
         summary.indexed += 1;
     }
 
@@ -84,11 +89,23 @@ pub fn refresh_paths(
         }
 
         if path.exists() {
-            if let Some(file) = walker::walk_single_file(root, &path) {
-                if indexed_content_matches(engine, &file.path, &file.content) {
-                    continue;
+            if let Some(file) = walker::walk_single_file_meta(root, &path) {
+                if file.indexable {
+                    if let Some(walked) = walker::walk_single_file(root, &path) {
+                        if indexed_content_matches(engine, &walked.path, &walked.content) {
+                            continue;
+                        }
+                        engine.index_file_with_modified(
+                            &walked.path,
+                            &walked.content,
+                            walked.modified_ms,
+                        );
+                    } else {
+                        engine.index_file_meta_only(&file.path, file.byte_size, file.modified_ms);
+                    }
+                } else {
+                    engine.index_file_meta_only(&file.path, file.byte_size, file.modified_ms);
                 }
-                engine.index_file_with_modified(&file.path, &file.content, file.modified_ms);
                 summary.indexed += 1;
             } else if let Some(relative) = walker::relative_path(root, &path) {
                 remove_indexed_path(engine, &relative, &mut summary);

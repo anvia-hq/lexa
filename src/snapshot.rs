@@ -120,6 +120,7 @@ fn compute_root_hash(file_meta: &[(String, crate::types::FileMeta)]) -> u64 {
         meta.byte_size.hash(&mut hasher);
         meta.symbol_count.hash(&mut hasher);
         meta.modified_ms.hash(&mut hasher);
+        meta.indexed.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -165,7 +166,7 @@ pub fn read_snapshot(path: impl AsRef<Path>) -> Result<SnapshotData> {
 
 pub fn load_snapshot_into_engine(engine: &mut Engine, path: impl AsRef<Path>) -> Result<usize> {
     let snapshot = read_snapshot(path)?;
-    let count = snapshot.outlines.len();
+    let count = snapshot.header.file_count as usize;
     engine.load_from_snapshot(snapshot);
     Ok(count)
 }

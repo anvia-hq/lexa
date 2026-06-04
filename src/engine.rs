@@ -265,6 +265,7 @@ impl Engine {
                 byte_size,
                 symbol_count: outline.symbol_count() as u32,
                 modified_ms,
+                indexed: true,
             },
         );
         self.outlines.insert(path.to_string(), outline);
@@ -284,6 +285,11 @@ impl Engine {
                 self.store.record_delete(path, 0);
             }
         }
+    }
+
+    pub fn index_file_meta_only(&mut self, path: &str, byte_size: u64, modified_ms: u64) {
+        self.index_file_meta_only_no_rebuild(path, byte_size, modified_ms);
+        self.rebuild_dep_graph();
     }
 
     pub fn remove_file(&mut self, path: &str) {
@@ -888,7 +894,17 @@ impl Engine {
         line_start: Option<u32>,
         line_end: Option<u32>,
     ) -> Option<String> {
-        let content = self.content_for(path)?;
+        let stub;
+        let content = if let Some(content) = self.content_for(path) {
+            content
+        } else {
+            let meta = self.file_meta.get(path)?;
+            if meta.indexed {
+                return None;
+            }
+            stub = unindexed_file_stub(path, meta);
+            &stub
+        };
         let lines: Vec<&str> = content.lines().collect();
 
         match (line_start, line_end) {
@@ -923,7 +939,17 @@ impl Engine {
         compact: bool,
         if_hash: Option<&str>,
     ) -> Option<ReadFileResult> {
-        let content = self.content_for(path)?;
+        let stub;
+        let content = if let Some(content) = self.content_for(path) {
+            content
+        } else {
+            let meta = self.file_meta.get(path)?;
+            if meta.indexed {
+                return None;
+            }
+            stub = unindexed_file_stub(path, meta);
+            &stub
+        };
         let hash = hash_content(content);
         let hash_hex = format!("{hash:x}");
         if if_hash.is_some_and(|expected| expected.eq_ignore_ascii_case(&hash_hex)) {
@@ -1298,21 +1324,59 @@ impl Engine {
     }
 
     pub fn index_project(&mut self, root: impl AsRef<Path>) -> usize {
-        let files = crate::walker::walk_project(root);
+        let root = root.as_ref();
+        let files = crate::walker::walk_project_meta(root);
         let count = files.len();
 
         for file in &files {
-            self.index_file_with_op(
-                &file.path,
-                &file.content,
-                file.modified_ms,
-                Op::Snapshot,
-                false,
-            );
+            if file.indexable {
+                let abs_path = root.join(&file.path);
+                match std::fs::read_to_string(&abs_path) {
+                    Ok(content) => self.index_file_with_op(
+                        &file.path,
+                        &content,
+                        file.modified_ms,
+                        Op::Snapshot,
+                        false,
+                    ),
+                    Err(_) => self.index_file_meta_only_no_rebuild(
+                        &file.path,
+                        file.byte_size,
+                        file.modified_ms,
+                    ),
+                }
+            } else {
+                self.index_file_meta_only_no_rebuild(&file.path, file.byte_size, file.modified_ms);
+            }
         }
         self.rebuild_dep_graph();
 
         count
+    }
+
+    fn index_file_meta_only_no_rebuild(&mut self, path: &str, byte_size: u64, modified_ms: u64) {
+        self.outlines.remove(path);
+        self.contents.remove(path);
+        self.content_cache.remove(path);
+        self.symbol_index.remove_file(path);
+        self.trigram_index.remove_file(path);
+        self.word_index.remove_file(path);
+        self.file_meta.insert(
+            path.to_string(),
+            FileMeta {
+                language: detect_language(path),
+                line_count: 0,
+                byte_size,
+                symbol_count: 0,
+                modified_ms,
+                indexed: false,
+            },
+        );
+        self.store.record_snapshot(
+            path,
+            byte_size,
+            hash_content(&format!("{path}\0{byte_size}\0{modified_ms}")),
+        );
     }
 }
 
@@ -1323,6 +1387,18 @@ pub fn hash_content(content: &str) -> u64 {
         hash = hash.wrapping_mul(1099511628211);
     }
     hash
+}
+
+fn unindexed_file_stub(path: &str, meta: &FileMeta) -> String {
+    let kind = path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext)
+        .filter(|ext| !ext.is_empty())
+        .unwrap_or("unknown");
+    format!(
+        "unindexed {kind} file: {} bytes\npath: {path}\nmodified_ms: {}\n",
+        meta.byte_size, meta.modified_ms
+    )
 }
 
 fn now_ms() -> u64 {
@@ -2189,11 +2265,51 @@ mod tests {
         );
         let unresolved = engine.get_unresolved_imports("src/app.ts");
         assert_eq!(unresolved.len(), 1);
-        assert_eq!(
-            unresolved[0].import,
-            "import { selectedModel } from './model-settings/selected-model';"
-        );
+        assert_eq!(unresolved[0].import, "./model-settings/selected-model");
         assert_eq!(unresolved[0].line_start, Some(1));
+    }
+
+    #[test]
+    fn dependency_graph_resolves_existing_asset_imports_without_text_indexing_binary_assets() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        let assets = src.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(
+            src.join("providers.ts"),
+            "import pngIcon from './assets/provider.png';\nimport svgIcon from './assets/provider.svg';\nexport const icons = [pngIcon, svgIcon];\n",
+        )
+        .unwrap();
+        std::fs::write(assets.join("provider.png"), [0u8, 1, 2, 3]).unwrap();
+        std::fs::write(assets.join("provider.svg"), "<svg></svg>\n").unwrap();
+
+        let mut engine = Engine::new(4);
+        engine.index_project(root.path());
+
+        let asset_paths = engine.glob_files("src/assets/**");
+        assert_eq!(
+            asset_paths,
+            vec![
+                "src/assets/provider.png".to_string(),
+                "src/assets/provider.svg".to_string()
+            ]
+        );
+        assert!(engine.get_unresolved_imports("src/providers.ts").is_empty());
+        assert_eq!(
+            engine.get_depends_on("src/providers.ts"),
+            vec![
+                "src/assets/provider.png".to_string(),
+                "src/assets/provider.svg".to_string()
+            ]
+        );
+        assert!(engine
+            .read_file("src/assets/provider.png", None, None)
+            .unwrap()
+            .contains("unindexed png file: 4 bytes"));
+        assert_eq!(
+            engine.read_file("src/assets/provider.svg", None, None),
+            Some("<svg></svg>\n".to_string())
+        );
     }
 
     #[test]

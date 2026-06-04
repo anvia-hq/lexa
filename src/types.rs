@@ -247,4 +247,10 @@ pub struct FileMeta {
     pub symbol_count: u32,
     #[serde(default)]
     pub modified_ms: u64,
+    #[serde(default = "default_indexed_file")]
+    pub indexed: bool,
+}
+
+fn default_indexed_file() -> bool {
+    true
 }
