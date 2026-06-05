@@ -1,0 +1,37 @@
+---
+title: Binary Releases
+---
+
+# Binary Releases
+
+GitHub Actions builds Lexa artifacts for four targets on every release tag.
+
+## Target matrix
+
+- macOS Apple Silicon (`aarch64-apple-darwin`)
+- macOS Intel (`x86_64-apple-darwin`)
+- Linux x86_64 (`x86_64-unknown-linux-gnu`)
+- Windows x86_64 (`x86_64-pc-windows-msvc`)
+
+## Publishing a release
+
+Tag the commit and push — the release workflow handles the rest:
+
+```bash
+git tag v0.5.1
+git push origin v0.5.1
+```
+
+The workflow attaches the four binaries to the GitHub Release and updates
+`CHANGELOG.md` is a manual edit you make before tagging.
+
+## Picking up a release locally
+
+```bash
+lexa upgrade
+```
+
+This replaces the currently running binary with the latest release. Pin a
+specific version with `lexa upgrade v0.5.1`, or override the install location
+with `--install-dir` / `LEXA_INSTALL_DIR`. See the
+[Install](/docs/install) page for details.

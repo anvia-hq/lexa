@@ -1,0 +1,59 @@
+---
+title: Pipeline
+---
+
+# Pipeline
+
+The `lexa pipeline` command chains query operations into a single invocation.
+Use it to express multi-step lookups without scripting bash.
+
+## Supported operations
+
+| Operation | Effect |
+| --- | --- |
+| `find` / `glob` | Match indexed paths. |
+| `fuzzy` / `path_search` | Fuzzy path search. |
+| `search` / `text_search` | Text search. |
+| `filter` | Restrict the prior step's output. |
+| `outline` | Switch each path to its outline. |
+| `deps` | Switch each path to its dependency edges. |
+| `read` | Read the file. |
+| `sort` | Sort the prior step's output. |
+| `limit` | Cap the number of results. |
+| `count` | Print the count and stop. |
+
+## Pipe string form
+
+```bash
+lexa pipeline "search AgentRunRequest | limit 3"
+lexa pipeline "glob **/*.ts | filter --language typescript | limit 10"
+```
+
+Steps are split on `|`, trimmed, and dispatched in order. The output of one
+step becomes the input of the next.
+
+## MCP `steps` array form
+
+When calling the MCP `pipeline` tool, prefer the `steps` array form over a
+single pipe string:
+
+```json
+{
+  "name": "pipeline",
+  "arguments": {
+    "steps": ["search AgentRunRequest", "limit 3"]
+  }
+}
+```
+
+Both forms are accepted; the legacy `pipeline.query` argument has been
+removed (v0.6.0). The pipe string is still available as the
+`pipeline` field for clients that prefer it.
+
+## Tips
+
+- Use `count` as the final step when you only need a number (e.g. for
+  progress reporting).
+- Use `outline` after `glob` to get a one-shot file list with imports and
+  symbols.
+- Combine `filter --language` and `filter --path-glob` for tight scopes.

@@ -1,0 +1,147 @@
+---
+title: Changelog
+---
+
+# Changelog
+
+## Unreleased
+
+No changes yet.
+
+## v0.6.1 — 2026-06-04
+
+### Fixed
+
+- Fixed `clap` argument-id collision causing `lexa upgrade` panic when global
+  `--version` flag and upgrade positional version argument shared the same
+  internal id.
+
+## v0.6.0 — 2026-06-04
+
+### Added
+
+- Top-level `symbol_search` for fuzzy symbol discovery when exact
+  `symbol_defs` is too strict.
+- `reindex` and `clear_index` MCP tools for explicit graph recovery.
+- Architecture cycle detection in structural audit output.
+- `files` filtering by path, glob, language, and line-count bounds.
+
+### Changed
+
+- Removed legacy MCP `pipeline.query` argument; pipeline now accepts
+  `pipeline` or `steps`.
+- Made `brief` explicit about scope as a context bundle for symbols, paths,
+  and scoped keywords — not natural-language QA.
+- Improved `brief` ranking and body extraction for relevant definitions.
+- `lexa index` prints a lightweight branded banner in interactive terminals.
+- Moved CLI upgrade/version-check code into a dedicated module; centralized
+  shared output formatting.
+
+### Fixed
+
+- Prevented invalid graph snapshots silently loading as empty index.
+- `audit` now refuses to run when no files are indexed.
+- Added header-first snapshot validation so incompatible graph versions fail
+  before payload decoding.
+- Cleaned `outline` output: kept imports out of symbol list; improved
+  missing-file/config error messages.
+- Improved JSON outline classification consistency; removed package manifest
+  parser unwrap.
+- Named `brief` scoring weights to make future ranking changes easier to
+  review.
+
+### Tests
+
+- Added regression coverage: snapshot header validation, graph-loading
+  behavior, pipeline schema cleanup, fuzzy symbol search, outline import
+  filtering, parser edge cases.
+
+## v0.5.1 — 2026-06-04
+
+### Fixed
+
+- Resolved local asset imports for SVG/PNG provider logos and known asset
+  files without indexing binary bytes.
+- Returned clear metadata stubs from `read` for known binary assets instead
+  of "missing".
+- Normalized TypeScript imports in outlines and dependency data to module
+  specifiers like `./assets/logo.svg`.
+- Avoided TypeScript outline false positives where exported object/string
+  values were misclassified as imports.
+- Made Unix upgrades install through a staged binary + atomic move to avoid
+  macOS `Killed: 9` after in-place replacement.
+
+### Improved
+
+- `brief` prefers relevant symbol definitions before generic snippets/call
+  sites.
+- Improved `brief` natural-query handling with identifier, path, and phrase
+  candidates.
+- Ranked callable definitions above related type aliases for the same
+  concept.
+- Bounded large `brief` symbol bodies to 120 lines.
+
+### Tests
+
+- Coverage for asset import resolution, metadata-only asset reads, TypeScript
+  import normalization, brief definition ranking, phrase/path-based brief
+  lookup, large symbol body truncation.
+- Verified Unix installer path with temporary install directory.
+
+## v0.5.0 — 2026-06-04
+
+### Changed
+
+- Made MCP structured content opt-in to reduce duplicated tool output by
+  default.
+
+## v0.4.2 — 2026-06-04
+
+### Changed
+
+- Clarified audit verification limits; reinforced that structural audit
+  output does not replace build, typecheck, lint, or test verification.
+
+## v0.4.1 — 2026-06-04
+
+### Fixed
+
+- Detected unresolved local TypeScript imports.
+- Fixed Windows installer ZIP layout handling.
+- Read MCP stdin framing as bytes to avoid non-UTF-8 input failures.
+
+## v0.4.0 — 2026-06-03
+
+### Added
+
+- Added MCP graph freshness checks and watcher support.
+
+## v0.3.0 — 2026-06-03
+
+### Added
+
+- First audit command implementation.
+- Scoped audit strict mode.
+- Audit configuration.
+- Dead-code audit candidates.
+
+### Improved
+
+- Refined audit reporting and release workflow behavior.
+
+## v0.2.0 — 2026-06-03
+
+### Added
+
+- Lexa binary upgrade command.
+
+### Improved
+
+- Improved import dependency resolution.
+- Restricted release workflow execution on pull requests.
+
+## v0.1.0 — 2026-06-03
+
+### Fixed
+
+- Fixed release publishing without checkout.

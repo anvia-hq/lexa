@@ -1,0 +1,68 @@
+---
+title: Safe-Edit Semantics
+---
+
+# Safe-Edit Semantics
+
+Lexa reads, patches, and creates files with hash-aware concurrency control.
+This page describes the model. For the per-flag reference see the
+[Read & Edit CLI page](/docs/cli/read-edit).
+
+## The three edit operations
+
+`lexa patch <path> <op>` accepts three operations:
+
+| Op | Effect |
+| --- | --- |
+| `replace` | Replace the lines in `--line-range` (or `--after`) with `--content`. |
+| `insert` | Insert `--content` at `--after` (after the given 1-based line). |
+| `delete` | Remove the lines in `--line-range`. |
+
+Atomic file writes go through a temp file + rename (`src/edit.rs`) so a
+failed edit never leaves the project in a half-written state.
+
+## The hash-aware flow
+
+Always read with `--hash` first, then pass the hash to `--if-hash` on the
+patch. Lexa refuses the patch if the on-disk content has changed since you
+read it.
+
+```bash
+lexa read src/main.rs --hash
+# hash: 4f8a3c1e...
+
+lexa patch src/main.rs replace -L 12 --if-hash 4f8a3c1e... --content '    println!("updated");'
+```
+
+The hash is an FNV-1a 64-bit digest, lower-case hex. Treat it as an opaque
+token.
+
+## Verifying without editing
+
+Pass `--if-hash` to `lexa read` to short-circuit when the content matches —
+useful as a cheap "did anything change?" probe in automation.
+
+## Dry runs
+
+`lexa patch` and `lexa create` accept `--dry-run` and return a diff-style
+preview without touching the file.
+
+## Path safety
+
+<aside data-callout="warning">
+Lexa normalizes every CLI and MCP path argument to a project-relative string
+and rejects paths containing `..` or pointing outside the project root. This
+is enforced in `src/project_path.rs`.
+</aside>
+
+## Creating files
+
+`lexa create <path>` writes a new file. It refuses to overwrite an existing
+file unless `--overwrite` is passed. Use `--dry-run` to preview.
+
+## Recording in the change log
+
+Every successful `patch` and `create` is recorded in the session-local change
+log (`src/store.rs`) and bumps the change sequence. See
+`lexa changes [since]` to enumerate the session's history. The change log is
+**not** persisted to the graph file — it resets on every process start.

@@ -1,0 +1,59 @@
+---
+title: MCP Setup
+---
+
+# MCP Setup
+
+Lexa ships an MCP server over stdio. It exposes every CLI command as a tool
+under the same name, plus three recovery tools (`reindex`, `clear_index`,
+`status`) that the CLI does not have direct equivalents for.
+
+## Start the server
+
+```bash
+lexa index /path/to/project
+lexa mcp /path/to/project
+```
+
+By default the server refreshes the graph before startup and watches the
+project for changes while running. External edits are applied to the same
+in-memory graph before the next MCP request, so tools always see fresh
+content without a restart.
+
+If you want a fully rebuilt graph instead of the cheaper startup freshness
+check, run `lexa index` first.
+
+## Configure a client
+
+The MCP server is a stdio subprocess. Configure your client (Claude Code,
+Cursor, Zed, etc.) like this:
+
+```json
+{
+  "mcpServers": {
+    "lexa": {
+      "command": "/path/to/lexa",
+      "args": ["mcp", "/path/to/project"]
+    }
+  }
+}
+```
+
+`/path/to/lexa` is the absolute path to the Lexa binary. `/path/to/project`
+is the project root you want it to serve.
+
+## Flags
+
+| Flag | Description |
+| --- | --- |
+| `--no-refresh` | Skip the startup graph refresh and the runtime watcher. |
+| `--debounce <ms>` | Tune the watcher debounce interval (default: 500ms). |
+| `--no-graph` | Run without loading or persisting a graph (full reindex on every request). |
+| `--structured-content` | Opt in to JSON `structuredContent` in every tool response. Alias: `--json-output`. |
+
+The global `--json` flag also opts in to structured content.
+
+## See also
+
+- [MCP Tools Reference](/docs/mcp/tools) — every tool, with input schemas and notes.
+- [MCP Output Formats](/docs/mcp/output) — text vs JSON, the `groups` vs `findings` rule.

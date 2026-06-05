@@ -3,4 +3,5 @@
 .DS_Store
 www/node_modules
 www/dist
+www/src/dist
 www/.astro

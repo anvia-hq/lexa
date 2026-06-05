@@ -1,0 +1,62 @@
+---
+title: Discovery
+---
+
+# Discovery
+
+Find files and paths in the indexed project.
+
+## `files [path]`
+
+Show indexed files, optionally filtered.
+
+```bash
+lexa files
+lexa files apps/desktop --language typescript
+lexa files --path-glob "**/*.{ts,tsx}" --max-lines 200
+lexa files packages --min-lines 100 --max-results 20
+```
+
+`path` is treated as a project-relative **prefix** — `lexa files apps/desktop`
+returns every file under `apps/desktop/`. Use `list` if you want only the
+immediate children.
+
+| Flag | Description |
+| --- | --- |
+| `--path-glob` | Match a glob against the indexed path. |
+| `--language` | Restrict to one of the [supported languages](/docs/language-support). |
+| `--min-lines` / `--max-lines` | Filter by line count. |
+| `-m, --max-results` | Cap the number of results (`--max` is an alias). |
+
+## `list [path]`
+
+Return only the **immediate** children of a directory — useful for navigating
+a tree without descending.
+
+```bash
+lexa list
+lexa list apps/desktop
+```
+
+## `glob <pattern>`
+
+Match indexed paths against a glob pattern. Supports `*`, `**`, `?`, and
+`{a,b}`.
+
+```bash
+lexa glob "**/*.rs"
+lexa glob "apps/**/index.{ts,tsx}"
+```
+
+## `path-search <pattern>`
+
+Fuzzy path search. Useful when you only remember part of a path.
+
+```bash
+lexa path-search "termnl-sess"
+lexa path-search "create-project-agent" --max 5
+```
+
+| Flag | Description |
+| --- | --- |
+| `-m, --max <N>` | Cap the number of results (default: 20). |

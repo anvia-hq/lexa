@@ -1,0 +1,56 @@
+---
+title: MCP Output Formats
+---
+
+# MCP Output Formats
+
+Lexa's MCP server emits two response shapes: text only (default) and
+text-plus-JSON when structured content is opted in.
+
+## Text only (default)
+
+By default every tool returns a single text content block with the same
+human-readable rendering the CLI would print. The JSON envelope is omitted to
+reduce duplicated tool output and save tokens.
+
+<aside data-callout="info">
+Start with the default (text only). Opt into structured content only when
+your client needs to programmatically traverse the response — for example,
+to follow up a `brief` or `audit` call with another tool.
+</aside>
+
+## Opt in to structured content
+
+Three ways to enable it:
+
+| Surface | How |
+| --- | --- |
+| MCP-only flag | `lexa mcp <path> --structured-content` |
+| MCP-only alias | `lexa mcp <path> --json-output` |
+| Global | `lexa --json mcp <path>` |
+
+When enabled, every tool response includes both a text content block and a
+`structuredContent` object that mirrors the per-tool JSON shape.
+
+## The `groups` vs `findings` rule for `audit`
+
+The `audit` response is the only one with a non-trivial shape. It exposes
+both a flat `findings` array and a grouped `groups` object:
+
+- `groups.primary` — strong `actionable` findings.
+- `groups.secondary` — lower-priority findings on the same files.
+- `groups.actionable` — every finding tagged `actionable`.
+- `groups.candidates` — every `candidate` finding.
+- `groups.risk_notes` — every `risk_note` finding.
+- `groups.expected` — every `expected` finding.
+
+When summarizing audit output, read from `groups` first and only descend to
+`findings` when you need the full detail on a specific item. See the
+[Audit CLI page](/docs/cli/audit) for the full schema.
+
+## Per-tool JSON keys
+
+Most tools expose the same fields as their CLI `--json` output. The most
+notable extras are `path_glob` and `language` filters on `files`, and the
+full `ContextDetails` shape on `brief` (suggested next steps, relevant
+symbols, relevant snippets).

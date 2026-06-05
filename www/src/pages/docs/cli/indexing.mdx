@@ -1,0 +1,70 @@
+---
+title: Indexing
+---
+
+# Indexing
+
+These commands build, rebuild, and inspect the per-project graph.
+
+## `index <path>`
+
+Index a project and write the graph.
+
+```bash
+lexa index .
+lexa index /path/to/project
+lexa index . -o /tmp/custom.lexa
+```
+
+| Flag | Description |
+| --- | --- |
+| `-o, --output <path>` | Override the output graph location. |
+
+In an interactive terminal, `lexa index` prints a short branded banner.
+
+## `reindex [path]`
+
+Rebuild the in-memory graph from the on-disk tree. Useful when a snapshot is
+incompatible or stale.
+
+```bash
+lexa reindex .
+lexa reindex /path/to/project
+```
+
+## `clear-index`
+
+Remove the persisted graph snapshot (`.lexa/graph.lexa` by default).
+
+```bash
+lexa clear-index
+```
+
+## `status`
+
+Show index status without rebuilding.
+
+```bash
+lexa status
+```
+
+Output includes `files_indexed`, `symbols_indexed`, `unique_words_indexed`,
+the current `seq`, and `change_history_persisted`.
+
+## `watch [path]`
+
+Watch the project for changes and refresh the graph in place. The graph is
+persisted to disk on each refresh.
+
+```bash
+lexa watch .
+lexa watch . --debounce 250
+```
+
+| Flag | Description |
+| --- | --- |
+| `-d, --debounce <ms>` | Debounce interval for the watcher (default: 500ms). |
+
+## See also
+
+- [Project Graph](/docs/project-graph) — how the graph is persisted and resolved.

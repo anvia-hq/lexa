@@ -1,0 +1,47 @@
+---
+title: Development
+---
+
+# Development
+
+Lexa is a Rust project. The full contribution guide lives in
+[`CONTRIBUTING.md`](https://github.com/anvia-hq/lexa/blob/main/CONTRIBUTING.md).
+
+## Building
+
+```bash
+cargo build --release
+```
+
+The release binary lives at `./target/release/lexa`.
+
+## Local checks
+
+Before opening a PR, run the formatting, lint, and test suite:
+
+```bash
+cargo fmt -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+For performance-sensitive changes also build in release mode and consider
+running the [benchmark suite](/docs/benchmark).
+
+## Tests
+
+```bash
+cargo test
+```
+
+Tests live alongside the source files in each module. The audit, snapshot,
+brief, and pipeline subsystems each have their own focused test files.
+
+## Benchmark
+
+See the [Benchmark](/docs/benchmark) page for the canonical baseline and
+the smoke-test invocation.
+
+## Releases
+
+See [Binary Releases](/docs/binary-releases) for the publish flow.
