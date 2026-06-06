@@ -1,0 +1,136 @@
+---
+title: Audit
+---
+
+# Audit
+
+The `lexa audit` command runs a read-only review of the project graph and
+reports architecture findings: import cycles, large files, large symbols, and
+dependency hotspots. Dead-code candidates are opt-in.
+
+```bash
+lexa audit
+lexa --json audit
+lexa audit --max 50
+lexa audit --since main
+lexa audit --since main --strict
+lexa audit --config lexa.toml
+lexa audit --no-config
+lexa audit --include dead-code
+```
+
+<aside data-callout="warning">
+Audit is **read-only**. It is not a compiler, linter, typechecker, test
+runner, or build verifier. A clean Lexa audit does **not** mean the project
+compiles — run the repository's normal verification step (e.g. `cargo test`)
+alongside it.
+</aside>
+
+## Flags
+
+| Flag | Description |
+| --- | --- |
+| `-m, --max` | Cap the number of findings returned. |
+| `--since <ref>` | Scope findings to files changed since a git ref plus their direct dependency context. |
+| `--strict` | Return a non-zero exit code on high-severity structural findings. |
+| `--config <path>` | Path to a TOML config file (not a named preset). |
+| `--no-config` | Skip auto-discovery of `lexa.toml` / `.lexa/audit.toml`. |
+| `--include dead-code` | Opt in to dead-code candidate analysis. Repeatable. |
+
+## Actionability classification
+
+Every finding is tagged with one of four actionability levels:
+
+| Tag | Meaning |
+| --- | --- |
+| `actionable` | Likely refactor target. |
+| `candidate` | Verify before changing. |
+| `expected` | Normal dependency shape for a shared primitive or composition root. |
+| `risk_note` | Edit carefully; no refactor assumption required. |
+
+Human-readable output is grouped by actionability. A lower-priority finding
+on a file with a stronger `actionable` finding is marked `secondary`.
+
+## JSON / MCP output shape
+
+The `--json` and MCP responses include both a flat `findings` array and a
+grouped `groups` object. Buckets:
+
+- `primary` — strong `actionable` findings.
+- `secondary` — lower-priority findings on the same files.
+- `actionable` — every finding tagged `actionable`.
+- `candidates` — every `candidate` finding.
+- `risk_notes` — every `risk_note` finding.
+- `expected` — every `expected` finding.
+
+<aside data-callout="info">
+When summarizing audit output, prefer `groups` first. Use the flat
+`findings` array only when you need full detail on a specific item.
+</aside>
+
+## Dead-code candidates
+
+Off by default — enable with `--include dead-code` or the config. Scoped to
+**source-code symbols only** by default. Skipped automatically:
+
+- Style sheets (CSS, SCSS)
+- Data and config files (JSON, YAML, TOML, …)
+- Package manifests
+- Framework config files
+- Tests
+- Generated artifacts (protobuf/gRPC, Android/Qt/Dart/C# outputs, lockfiles,
+  build output, dependency folders, `worker-configuration.d.ts`,
+  `routeTree.gen.ts`, Drizzle metadata)
+
+This avoids reporting tooling keys, CSS tokens, and framework mount selectors
+as unused.
+
+## MCP audit call
+
+```json
+{
+  "name": "audit",
+  "arguments": {
+    "max_results": 20,
+    "include": ["dead-code"]
+  }
+}
+```
+
+- `max_results` is the canonical field; `max` is accepted as a compatibility
+  alias and takes lower precedence.
+- `config` is a TOML file path, not a named preset.
+- Strict mode is a separate CLI flag and is not exposed on the MCP audit tool.
+
+## Minimal config example (`lexa.toml`)
+
+```toml
+[audit]
+max_findings = 100
+
+[audit.thresholds]
+large_file_warning = 800
+large_file_high = 1500
+large_symbol_warning = 120
+large_symbol_high = 250
+fan_in_warning = 15
+fan_in_high = 40
+fan_out_warning = 20
+fan_out_high = 50
+
+[audit.rules]
+"architecture.cycle" = "high"
+"file.large" = "warning"
+"symbol.large" = "warning"
+"dependency.hotspot" = "warning"
+"dead_code.candidate" = "off"
+
+[audit.ignore]
+generated = true
+paths = ["target/**", "vendor/**"]
+findings = ["dependency.hotspot:src/main.rs"]
+
+[audit.dead_code]
+ignore_symbols = ["main", "handler", "setup"]
+entrypoint_globs = ["src/main.*", "src/bin/**", "pages/**", "app/**"]
+```

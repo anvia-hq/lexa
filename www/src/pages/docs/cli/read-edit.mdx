@@ -1,0 +1,76 @@
+---
+title: Read & Edit
+---
+
+# Read & Edit
+
+Read files, apply line-based patches, and create new files. For the conceptual
+model — hash-aware flow, edit ops, path safety — see
+[Safe-Edit Semantics](/docs/safe-edit).
+
+## `read <path>`
+
+Read a file or a line range.
+
+```bash
+lexa read src/main.rs
+lexa read src/main.rs -L 1-80
+lexa read src/main.rs -L 1-80 --compact
+lexa read src/main.rs --hash
+```
+
+| Flag | Description |
+| --- | --- |
+| `-L, --line-range <RANGE>` | `START-END`, `START-`, or a single line number. |
+| `-c, --compact` | Suppress blank lines between code blocks. |
+| `--hash` | Prefix the content with its content hash. |
+| `--if-hash <HEX>` | Short-circuit if the on-disk hash matches; otherwise print an error. |
+
+## `patch <path> <op>`
+
+Apply a line-based edit. Always read with `--hash` first and pass it to
+`--if-hash` to detect concurrent changes.
+
+```bash
+lexa patch src/main.rs replace -L 12 --if-hash 4f8a3c1e... --content '    println!("updated");'
+lexa patch src/main.rs insert  --after 8 --if-hash 4f8a3c1e... --content '// new comment'
+lexa patch src/main.rs delete  -L 12-14 --if-hash 4f8a3c1e...
+```
+
+| Flag | Description |
+| --- | --- |
+| `-L, --line-range` | Range to replace or delete. |
+| `--after <N>` | Insert after the given 1-based line. |
+| `--content <string>` | Inline replacement content. |
+| `--content-file <path>` | Read replacement content from a file. |
+| `--if-hash <HEX>` | Refuse the edit if the on-disk hash doesn't match. |
+| `--dry-run` | Preview the diff without writing. |
+
+The three operations are `replace`, `insert`, and `delete`. See
+[Safe-Edit Semantics](/docs/safe-edit) for the model.
+
+## `create <path>`
+
+Create a new file. Refuses to overwrite an existing file unless `--overwrite`
+is passed.
+
+```bash
+lexa create src/new_file.rs --content 'pub fn new_file() {}'
+lexa create src/new_file.rs --content-file /tmp/body.txt
+lexa create src/existing.rs  --content 'replacement' --overwrite
+lexa create src/preview.rs   --content '...' --dry-run
+```
+
+| Flag | Description |
+| --- | --- |
+| `--content <string>` | Inline file content. |
+| `--content-file <path>` | Read content from a file. |
+| `--overwrite` | Allow overwriting an existing file. |
+| `--dry-run` | Preview without writing. |
+
+## Atomic writes
+
+Both `patch` and `create` write through a temp file and rename, so an
+interrupted edit never leaves the project in a half-written state. The touched
+file is reindexed in place and the change is recorded in the session-local
+change log.

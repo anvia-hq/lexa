@@ -1,0 +1,51 @@
+---
+title: Configuration & Environment Variables
+---
+
+# Configuration & Environment Variables
+
+Lexa has no global config file. Configuration is split between environment
+variables, CLI flags, and a few optional per-project files (notably the audit
+config).
+
+## Environment variables
+
+| Variable | Effect |
+| --- | --- |
+| `LEXA_INSTALL_DIR` | Override the directory `lexa upgrade` writes to. Equivalent to `--install-dir`. |
+| `LEXA_NO_UPDATE_CHECK=1` | Skip the GitHub release check that runs with `lexa --version`. |
+| `PATH` | Must include the directory Lexa was installed into (`~/.cargo/bin` for `cargo install`). |
+
+## Audit config (TOML)
+
+Audit reads an optional TOML file. Auto-discovery looks for `lexa.toml` or
+`.lexa/audit.toml` in the project root unless `--config <path>` or
+`--no-config` is passed.
+
+See the [Audit CLI page](/docs/cli/audit) for the full schema and a minimal
+example.
+
+## MCP client config
+
+The MCP server is a stdio subprocess. Configure your client (Claude Code,
+Cursor, etc.) with:
+
+```json
+{
+  "mcpServers": {
+    "lexa": {
+      "command": "/path/to/lexa",
+      "args": ["mcp", "/path/to/project"]
+    }
+  }
+}
+```
+
+See the [MCP setup page](/docs/mcp) for the full example and the available
+flags.
+
+## Graph path
+
+The default location is `<project>/.lexa/graph.lexa`. See
+[Project Graph](/docs/project-graph) for the full resolution order and
+override flags.

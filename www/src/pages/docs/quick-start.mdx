@@ -1,0 +1,47 @@
+---
+title: Quick Start
+---
+
+# Quick Start
+
+Lexa works on any codebase — point it at a directory and it builds a local
+graph in milliseconds.
+
+## The 60-second tour
+
+```bash
+lexa index /path/to/project
+cd /path/to/project
+lexa files
+lexa text-search "handle_request"
+lexa outline src/main.rs
+lexa symbol-defs Engine
+lexa read src/main.rs -L 1-80
+```
+
+What this does:
+
+- `lexa index` writes the project graph to `.lexa/graph.lexa` (overridable with
+  `--graph`). In an interactive terminal you'll see a short branded banner.
+- Every later command in the same project root reads that graph automatically.
+- `text-search` and `symbol-defs` rank results from the index — no grep, no
+  re-walk.
+- `outline` shows the symbols and imports of a single file.
+- `read -L 1-80` prints the first 80 lines of a file with its content hash.
+
+## A custom graph path
+
+If you want the graph somewhere other than `.lexa/graph.lexa`, pass `--graph`
+once and it applies to every command:
+
+```bash
+lexa --graph /tmp/project.graph.lexa index /path/to/project
+lexa --graph /tmp/project.graph.lexa text-search "Parser"
+```
+
+## Where to go next
+
+- Learn the [CLI Overview](/docs/cli).
+- Connect an [MCP client](/docs/mcp) so agents can query the same graph.
+- Skim [Safe-Edit Semantics](/docs/safe-edit) before writing any automation
+  that patches files.

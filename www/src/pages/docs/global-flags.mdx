@@ -1,0 +1,31 @@
+---
+title: Global Flags
+---
+
+# Global Flags
+
+These flags apply to every Lexa subcommand unless noted.
+
+| Flag | Description |
+| --- | --- |
+| `--graph <path>` | Override the default `.lexa/graph.lexa` location for this invocation. |
+| `--no-graph` | Run without loading or persisting a graph snapshot. |
+| `--json` | Emit JSON instead of pretty text. Affects every subcommand. |
+| `--version` | Print the Lexa version and exit. |
+
+## A note on `--json`
+
+The JSON shape mirrors the per-subcommand text output — there is no separate
+"machine format" with extra fields. The MCP `structuredContent` envelope is
+also JSON, but it is opt-in (see [Output Formats](/docs/mcp/output)).
+
+## A note on `--no-graph`
+
+Use `--no-graph` for ephemeral one-shot inspections on read-only filesystems
+or in CI when you do not want a graph to land in the project directory.
+
+## See also
+
+- [Project Graph](/docs/project-graph) — how the graph path is resolved.
+- [Configuration & Env Vars](/docs/configuration) — environment variables that
+  influence behavior.

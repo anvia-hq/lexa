@@ -1,0 +1,319 @@
+---
+title: MCP Tools Reference
+---
+
+# MCP Tools Reference
+
+Lexa's MCP server exposes 22 tools. The table below summarizes every one. Use
+the per-tool headings below for input schemas and notes.
+
+## At a glance
+
+| Tool | CLI equivalent | Required input | Notes |
+| --- | --- | --- | --- |
+| [`files`](#tool-files) | `lexa files` | optional filters | Filters by path / glob / language / line count. |
+| [`list`](#tool-list) | `lexa list` | optional path | Immediate children of a directory. |
+| [`glob`](#tool-glob) | `lexa glob` | `pattern` | Glob match against indexed paths. |
+| [`path_search`](#tool-path_search) | `lexa path-search` | `query` | Fuzzy path search. |
+| [`outline`](#tool-outline) | `lexa outline` | `path` | Symbols and imports for one file. |
+| [`symbol_defs`](#tool-symbol_defs) | `lexa symbol-defs` | `name` | Exact symbol definitions. |
+| [`symbol_search`](#tool-symbol_search) | `lexa symbol-search` | `query` | Fuzzy symbol search. |
+| [`word_refs`](#tool-word_refs) | `lexa word-refs` | `word` | Exact identifier occurrences (incl. declarations). |
+| [`text_search`](#tool-text_search) | `lexa text-search` | `query` | Substring or regex text search. |
+| [`callers`](#tool-callers) | `lexa callers` | `name` | Non-definition call sites / usages. |
+| [`brief`](#tool-brief) | `lexa brief` | `task` | Compact context bundle for a code task. |
+| [`trace_deps`](#tool-trace_deps) | `lexa trace-deps` | `path` | Resolved `imported_by` / `depends_on` edges. |
+| [`read`](#tool-read) | `lexa read` | `path` | Read with optional line range, `compact`, `if_hash`. |
+| [`patch`](#tool-patch) | `lexa patch` | `path`, `op` | Line-based edit with `if_hash` and `dry_run`. |
+| [`create`](#tool-create) | `lexa create` | `path` | Create a file; refuses overwrites unless asked. |
+| [`changes`](#tool-changes) | `lexa changes` | optional `since` | Session-local change history. |
+| [`recent`](#tool-recent) | `lexa recent` | optional `limit` | Recently modified files. |
+| [`status`](#tool-status) | `lexa status` | — | Index status. |
+| [`reindex`](#tool-reindex) | — | — | Rebuild the in-memory index; persist when persistence is enabled. |
+| [`clear_index`](#tool-clear_index) | `lexa clear-index` | — | Clear in-memory index and remove the graph file. |
+| [`audit`](#tool-audit) | `lexa audit` | optional `include` | See [Audit CLI page](/docs/cli/audit) for the full schema. |
+| [`pipeline`](#tool-pipeline) | `lexa pipeline` | `steps` or `pipeline` | Composable query chain. |
+
+---
+
+## tool-files
+
+```json
+{
+  "name": "files",
+  "arguments": {
+    "path": "apps/desktop",
+    "path_glob": "**/*.{ts,tsx}",
+    "language": "typescript",
+    "min_lines": 50,
+    "max_lines": 500,
+    "max_results": 20
+  }
+}
+```
+
+`max_results` is canonical; `max` is accepted as a compatibility alias. The
+response includes `count`, `total`, `limit`, `truncated`, `filters`, and a
+`files` array.
+
+## tool-list
+
+```json
+{ "name": "list", "arguments": { "path": "apps/desktop" } }
+```
+
+Returns `{ path, count, entries[] }` — only the immediate children.
+
+## tool-glob
+
+```json
+{ "name": "glob", "arguments": { "pattern": "**/*.rs" } }
+```
+
+Returns `{ pattern, count, total, limit, truncated, paths[] }`.
+
+## tool-path_search
+
+```json
+{ "name": "path_search", "arguments": { "query": "termnl-sess", "max_results": 5 } }
+```
+
+Returns `{ query, count, limit, results: [{ path, score }] }`.
+
+## tool-outline
+
+```json
+{ "name": "outline", "arguments": { "path": "src/main.rs" } }
+```
+
+Returns `{ path, language, line_count, byte_size, symbol_count, imports,
+unresolved_imports, symbols[] }`. Since v0.6.0 imports are kept out of the
+symbol list.
+
+## tool-symbol_defs
+
+```json
+{ "name": "symbol_defs", "arguments": { "name": "Engine" } }
+```
+
+## tool-symbol_search
+
+```json
+{ "name": "symbol_search", "arguments": { "query": "createAgent", "max_results": 10 } }
+```
+
+Fuzzy — `createAgent` will also match `createProjectAgent` and friends.
+
+## tool-word_refs
+
+```json
+{ "name": "word_refs", "arguments": { "word": "Engine" } }
+```
+
+Includes declarations and definitions. For non-definition call sites only,
+use [`callers`](#tool-callers).
+
+## tool-text_search
+
+```json
+{
+  "name": "text_search",
+  "arguments": {
+    "query": "useEffect",
+    "max_results": 20,
+    "regex": false,
+    "scope": true,
+    "compact": false,
+    "paths_only": false,
+    "path_glob": "**/*.{ts,tsx}"
+  }
+}
+```
+
+## tool-callers
+
+```json
+{ "name": "callers", "arguments": { "name": "createProjectAgent", "max_results": 20 } }
+```
+
+Narrower than `word_refs` — skips declaration-like occurrences such as type
+aliases.
+
+## tool-brief
+
+```json
+{
+  "name": "brief",
+  "arguments": {
+    "task": "createProjectAgent",
+    "max_results": 10,
+    "path_prefix": "packages/agents",
+    "path_glob": null,
+    "language": "typescript"
+  }
+}
+```
+
+Returns a `ContextDetails` object with suggested next steps, relevant
+symbols, and relevant snippets. `path` is accepted as a `path_prefix` alias.
+Brief is a context bundler, not natural-language QA — vague queries return
+low-confidence results with suggested next steps.
+
+## tool-trace_deps
+
+```json
+{
+  "name": "trace_deps",
+  "arguments": {
+    "path": "src/main.rs",
+    "direction": "imported_by",
+    "transitive": true
+  }
+}
+```
+
+`direction` is one of `imported_by` (default) or `depends_on`. External
+packages are not returned as dependency nodes; unresolved local imports are
+reported separately in the `depends_on` direction.
+
+## tool-read
+
+```json
+{
+  "name": "read",
+  "arguments": {
+    "path": "src/main.rs",
+    "line_start": 1,
+    "line_end": 80,
+    "compact": false,
+    "if_hash": "4f8a3c1e..."
+  }
+}
+```
+
+Text content is prefixed with `hash:` when not in `if_hash` short-circuit
+mode. `if_hash` short-circuits when the on-disk hash matches.
+
+## tool-patch
+
+```json
+{
+  "name": "patch",
+  "arguments": {
+    "path": "src/main.rs",
+    "op": "replace",
+    "content": "    println!(\"updated\");",
+    "range_start": 12,
+    "range_end": 12,
+    "if_hash": "4f8a3c1e...",
+    "dry_run": false
+  }
+}
+```
+
+`op` is one of `replace`, `insert`, `delete`. For `insert`, pass `after`
+instead of a range. Always read with `read` first and pass the resulting
+`hash` to `if_hash` to detect concurrent changes.
+
+## tool-create
+
+```json
+{
+  "name": "create",
+  "arguments": {
+    "path": "src/new_file.rs",
+    "content": "pub fn new_file() {}",
+    "overwrite": false,
+    "dry_run": false
+  }
+}
+```
+
+Refuses to overwrite an existing file unless `overwrite: true`.
+
+## tool-changes
+
+```json
+{ "name": "changes", "arguments": { "since": 0 } }
+```
+
+`since` is a session-local sequence number, not a git ref. The change log
+is not persisted to the graph snapshot.
+
+## tool-recent
+
+```json
+{ "name": "recent", "arguments": { "limit": 10 } }
+```
+
+## tool-status
+
+```json
+{ "name": "status" }
+```
+
+Returns `{ files_indexed, symbols_indexed, unique_words_indexed,
+word_indexed_files, seq, change_history_persisted, graph }`.
+
+## tool-reindex
+
+```json
+{ "name": "reindex" }
+```
+
+Rebuilds the in-memory index from the MCP project root and persists when
+persistence is enabled.
+
+## tool-clear_index
+
+```json
+{ "name": "clear_index" }
+```
+
+Clears the in-memory index and removes the graph file. Returns
+`{ cleared, graph_removed, graph }`.
+
+## tool-audit
+
+```json
+{
+  "name": "audit",
+  "arguments": {
+    "max_results": 20,
+    "since": "main",
+    "config": "lexa.toml",
+    "no_config": false,
+    "include": ["dead-code"]
+  }
+}
+```
+
+`max_results` is canonical; `max` is a compatibility alias. `config` is a
+TOML file path, not a named preset. Strict mode is a CLI-only flag. See the
+[Audit CLI page](/docs/cli/audit) for the full output shape and the
+`groups` vs `findings` rule.
+
+## tool-pipeline
+
+```json
+{
+  "name": "pipeline",
+  "arguments": {
+    "steps": ["search AgentRunRequest", "limit 3"]
+  }
+}
+```
+
+Or, if you prefer a single string:
+
+```json
+{
+  "name": "pipeline",
+  "arguments": {
+    "pipeline": "search AgentRunRequest | limit 3"
+  }
+}
+```
+
+See the [Pipeline CLI page](/docs/cli/pipeline) for the full list of
+operations.

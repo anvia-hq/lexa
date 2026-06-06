@@ -1,0 +1,64 @@
+---
+title: Code Structure
+---
+
+# Code Structure
+
+Commands for symbols, dependencies, and task context.
+
+## `outline <path>`
+
+Show imports and symbols for a single file.
+
+```bash
+lexa outline src/main.rs
+```
+
+Output includes the file's language, line count, byte size, the symbol list,
+the resolved import list, and any unresolved local imports. As of v0.6.0
+imports are kept out of the symbol list.
+
+## `trace-deps <path>`
+
+Trace the resolved project-file imports of a single file.
+
+```bash
+lexa trace-deps src/main.rs
+lexa trace-deps src/main.rs --reverse
+lexa trace-deps src/main.rs --transitive
+```
+
+| Flag | Description |
+| --- | --- |
+| `-r, --reverse` | Return files that import this one (`imported_by`) instead. |
+| `-t, --transitive` | Follow the graph through every intermediate file. |
+
+<aside data-callout="info">
+External packages are not returned as dependency nodes. Unresolved local
+imports are reported separately in the `depends_on` direction.
+</aside>
+
+## `brief <task>`
+
+Bundle context for an explicit code task. The task is a free-form description
+of what you're trying to do; Lexa returns a small, ranked set of relevant
+symbols, snippets, and next steps.
+
+```bash
+lexa brief createAgentRuntimeForRun
+lexa brief "terminal session" --path-prefix apps/desktop
+lexa brief "createProjectAgent packages/agents" --path-prefix packages/agents --max 8
+```
+
+| Flag | Description |
+| --- | --- |
+| `-m, --max <N>` | Cap the number of context items (default: 10). |
+| `--path-prefix` | Restrict to a project-relative path prefix. |
+| `--path-glob` | Restrict to a glob. |
+| `--language` | Restrict to one of the [supported languages](/docs/language-support). |
+
+<aside data-callout="info">
+Brief is a **context bundler**, not a natural-language QA tool. If your query
+is vague, Lexa marks the response low-confidence and suggests next steps like
+`symbol-search`, `text-search`, or scope filters.
+</aside>

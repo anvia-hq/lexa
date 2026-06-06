@@ -1,0 +1,43 @@
+---
+title: Benchmark
+---
+
+# Benchmark
+
+Lexa includes a Criterion-based benchmark suite for indexing, search, and
+snapshot performance.
+
+## Running the suite
+
+Full run:
+
+```bash
+cargo bench --bench engine
+```
+
+Faster local smoke run:
+
+```bash
+cargo bench --bench engine -- --warm-up-time 1 --measurement-time 2 --sample-size 10
+```
+
+## Baseline (June 3, 2026, generated Rust corpus)
+
+| Benchmark | Corpus | Time |
+| --- | --- | --- |
+| `project_index/100` | 100 files | ~5.7 ms |
+| `project_index/500` | 500 files | ~30.8 ms |
+| `search/exact_word` | 1,000 files | ~57.6 µs |
+| `search/unique_token` | 1,000 files | ~192 µs |
+| `search/regex` | 1,000 files | ~54.1 µs |
+| `search/rich_scoped` | 1,000 files | ~92.9 µs |
+| `search/symbol_defs` | 1,000 files | ~91.5 ns |
+| `search/callers` | 1,000 files | ~97.9 µs |
+| `incremental_edit/single_file_reindex` | 500 files | ~1.1 ms |
+| `snapshot/write` | 500 files | ~6.4 ms |
+| `snapshot/load_into_engine` | 500 files | ~7.6 ms |
+
+<aside data-callout="info">
+Treat these numbers as a local regression baseline. Hardware, corpus shape,
+and OS scheduling will shift the absolute values.
+</aside>
