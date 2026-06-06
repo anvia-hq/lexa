@@ -4,42 +4,102 @@ layout: landing
 
 <div className="landing-root">
 
-<div className="landing-eyebrow">Lexa · v0.6.1</div>
+<section className="landing-hero">
+  <div className="landing-hero-text">
+    <div className="landing-eyebrow">
+      <span className="landing-eyebrow-dot" aria-hidden="true"></span>
+      <span>Lexa</span>
+      <span className="landing-eyebrow-sep" aria-hidden="true">·</span>
+      <span>v0.6.1</span>
+    </div>
 
-<h1 className="landing-headline">One local graph<br /><em>for humans and AI agents.</em></h1>
+    <h1 className="landing-headline">Local code intelligence for humans and agents.</h1>
 
-<p className="landing-tagline">
-  Lexa turns a codebase into a portable, queryable graph — so terminals, IDEs,
-  and AI agents all work from the same stable view of the project. Index once,
-  query everywhere.
-</p>
+    <p className="landing-tagline">
+      Lexa turns a repository into one portable graph for search, project
+      context, dependency tracing, and hash-aware edits. Index once, query from
+      the CLI, your editor, or an MCP client.
+    </p>
 
-<div className="landing-ctas">
-  <a className="landing-cta landing-cta-primary" href="/docs/quick-start">
-    Get Started →
-  </a>
-  <a className="landing-cta" href="https://github.com/anvia-hq/lexa" target="_blank" rel="noopener noreferrer">
-    View on GitHub ↗
-  </a>
-  <a className="landing-cta" href="/docs/mcp">
-    MCP Setup
-  </a>
-</div>
+    <div className="landing-ctas">
+      <a className="landing-cta landing-cta-primary" href="/docs/quick-start">
+        Get Started →
+      </a>
+      <a className="landing-cta" href="/docs/mcp">
+        MCP Setup
+      </a>
+    </div>
+
+    <div className="landing-install" aria-label="Install Lexa">
+      <code className="landing-install-cmd">$ curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh</code>
+      <button
+        type="button"
+        className="landing-install-copy"
+        data-copy="curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh"
+        aria-label="Copy install command"
+      >
+        <span className="landing-install-copy-label">Copy</span>
+      </button>
+    </div>
+
+    <div className="landing-trust">
+      <span>macOS</span>
+      <span aria-hidden="true">·</span>
+      <span>Linux</span>
+      <span aria-hidden="true">·</span>
+      <span>Windows</span>
+      <span aria-hidden="true">·</span>
+      <span>MIT</span>
+    </div>
+  </div>
+
+  <div className="landing-terminal" aria-label="Lexa command preview">
+    <div className="landing-terminal-head">
+      <div className="landing-terminal-title">lexa — ~/myproject</div>
+      <div className="landing-terminal-status">
+        <span className="landing-terminal-status-dot" aria-hidden="true"></span>
+        <span>indexed</span>
+      </div>
+    </div>
+    <pre className="landing-terminal-body"><code>{`$ `}<span className="landing-terminal-cmd">{`lexa index`}</span>{` .
+
+`}<span className="landing-terminal-ok">{`✓`}</span>{` 1,284 files · 31 ms · 4,902 symbols
+
+$ `}<span className="landing-terminal-cmd">{`lexa symbol-search`}</span>{` `}<span className="landing-terminal-str">{`"createAgent"`}</span>{`
+
+`}<span className="landing-terminal-name">{`createAgent`}</span>{`          `}<span className="landing-terminal-path">{`src/agents/runtime.ts:42`}</span>{`
+`}<span className="landing-terminal-name">{`createProjectAgent`}</span>{`   `}<span className="landing-terminal-path">{`src/agents/project.ts:18`}</span>{`
+`}<span className="landing-terminal-name">{`createTestAgent`}</span>{`      `}<span className="landing-terminal-path">{`src/agents/test.ts:8`}</span>{`
+`}<span className="landing-terminal-cursor" aria-hidden="true"></span></code></pre>
+  </div>
+</section>
 
 <div className="landing-section">
-  <div className="landing-section-title">By the numbers</div>
+  <div className="landing-section-title">Benchmark</div>
   <div className="landing-features">
     <div className="landing-feature">
       <div className="landing-feature-value">33</div>
-      <div className="landing-feature-label">Languages indexed — tree-sitter for the 11 majors, lightweight parsers for the rest.</div>
+      <div className="landing-feature-label">Languages indexed.</div>
     </div>
     <div className="landing-feature">
-      <div className="landing-feature-value">~30&nbsp;ms</div>
-      <div className="landing-feature-label">Index a 500-file Rust project from scratch, end to end.</div>
+      <div className="landing-feature-value">~30 ms</div>
+      <div className="landing-feature-label">Index 500 files.</div>
     </div>
     <div className="landing-feature">
-      <div className="landing-feature-value">0</div>
-      <div className="landing-feature-label">External API calls. One local graph, fully offline, hash-aware safe edits.</div>
+      <div className="landing-feature-value">~91 ns</div>
+      <div className="landing-feature-label">Symbol lookup, 1k files.</div>
+    </div>
+    <div className="landing-feature">
+      <div className="landing-feature-value">~57 µs</div>
+      <div className="landing-feature-label">Exact search, 1k files.</div>
+    </div>
+    <div className="landing-feature">
+      <div className="landing-feature-value">~1.1 ms</div>
+      <div className="landing-feature-label">Incremental reindex.</div>
+    </div>
+    <div className="landing-feature">
+      <div className="landing-feature-value">~54 µs</div>
+      <div className="landing-feature-label">Regex search, 1k files.</div>
     </div>
   </div>
 </div>
@@ -75,41 +135,27 @@ layout: landing
 </div>
 
 <div className="landing-section">
-  <div className="landing-section-title">Languages</div>
-  <div className="landing-langs">
-    <span className="landing-lang">Rust</span>
-    <span className="landing-lang">TypeScript</span>
-    <span className="landing-lang">JavaScript</span>
-    <span className="landing-lang">Python</span>
-    <span className="landing-lang">Go</span>
-    <span className="landing-lang">C</span>
-    <span className="landing-lang">C++</span>
-    <span className="landing-lang">Java</span>
-    <span className="landing-lang">Ruby</span>
-    <span className="landing-lang">PHP</span>
-    <span className="landing-lang">Zig</span>
-    <span className="landing-lang">HCL</span>
-    <span className="landing-lang">R</span>
-    <span className="landing-lang">Markdown</span>
-    <span className="landing-lang">JSON</span>
-    <span className="landing-lang">TOML</span>
-    <span className="landing-lang">YAML</span>
-    <span className="landing-lang">Dart</span>
-    <span className="landing-lang">Kotlin</span>
-    <span className="landing-lang">Swift</span>
-    <span className="landing-lang">Svelte</span>
-    <span className="landing-lang">Vue</span>
-    <span className="landing-lang">Astro</span>
-    <span className="landing-lang">Shell</span>
-    <span className="landing-lang">CSS</span>
-    <span className="landing-lang">SCSS</span>
-    <span className="landing-lang">SQL</span>
-    <span className="landing-lang">Protobuf</span>
-    <span className="landing-lang">Fortran</span>
-    <span className="landing-lang">LLVM IR</span>
-    <span className="landing-lang">MLIR</span>
-    <span className="landing-lang">TableGen</span>
+  <div className="landing-section-kicker">Language coverage</div>
+  <div className="landing-section-heading">Broad language coverage for the codebases teams actually ship.</div>
+  <div className="landing-logo-grid">
+    <figure className="landing-logo"><img src="/logos/languages/rust.png" alt="Rust logo" loading="lazy" /><figcaption>Rust</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/typescript.png" alt="TypeScript logo" loading="lazy" /><figcaption>TypeScript</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/javascript.png" alt="JavaScript logo" loading="lazy" /><figcaption>JavaScript</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/python.png" alt="Python logo" loading="lazy" /><figcaption>Python</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/go.png" alt="Go logo" loading="lazy" /><figcaption>Go</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/c.png" alt="C logo" loading="lazy" /><figcaption>C</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/cpp.png" alt="C++ logo" loading="lazy" /><figcaption>C++</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/java.png" alt="Java logo" loading="lazy" /><figcaption>Java</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/ruby.png" alt="Ruby logo" loading="lazy" /><figcaption>Ruby</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/php.png" alt="PHP logo" loading="lazy" /><figcaption>PHP</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/zig.png" alt="Zig logo" loading="lazy" /><figcaption>Zig</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/kotlin.png" alt="Kotlin logo" loading="lazy" /><figcaption>Kotlin</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/swift.png" alt="Swift logo" loading="lazy" /><figcaption>Swift</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/vue.png" alt="Vue logo" loading="lazy" /><figcaption>Vue</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/svelte.png" alt="Svelte logo" loading="lazy" /><figcaption>Svelte</figcaption></figure>
+    <figure className="landing-logo"><img src="/logos/languages/markdown.png" alt="Markdown logo" loading="lazy" /><figcaption>Markdown</figcaption></figure>
   </div>
+  <a className="landing-inline-link" href="/docs/language-support">See all 33 supported languages →</a>
 </div>
 
 <div className="landing-foot">
