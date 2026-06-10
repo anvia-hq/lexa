@@ -139,12 +139,13 @@ impl ContentCache {
         self.count += 1;
     }
 
-    #[cfg(test)]
     pub fn clear(&mut self) {
         for slot in &mut self.slots {
             slot.present = false;
             slot.key_hash = 0;
             slot.ref_bit = false;
+            slot.key.clear();
+            slot.value.clear();
         }
         self.count = 0;
         self.hand = 0;
