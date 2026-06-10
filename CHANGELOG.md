@@ -4,6 +4,13 @@
 
 No changes yet.
 
+## v0.6.2 - 2026-06-10
+
+### Tests
+
+- Expanded regression coverage for MCP read, patch, create, status, recent, and changes flows.
+- Added focused coverage for edit/create safety paths, pipeline output behavior, output helpers, CLI line ranges, and parser fixtures.
+
 ## v0.6.1 - 2026-06-04
 
 ### Fixed
