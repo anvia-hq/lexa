@@ -367,6 +367,18 @@ fn collect_reads(engine: &Engine, state: &PipelineState) -> Vec<ReadItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::SearchResult;
+
+    fn sample_engine() -> Engine {
+        let mut engine = Engine::new(16);
+        engine.index_file(
+            "src/b.rs",
+            "use crate::a;\nfn beta() {\n    println!(\"needle\");\n}\n",
+        );
+        engine.index_file("src/a.rs", "pub fn alpha() {}\n");
+        engine.index_file("README.md", "needle docs\n");
+        engine
+    }
 
     #[test]
     fn pipeline_returns_typed_file_output() {
@@ -395,5 +407,147 @@ mod tests {
             }
             other => panic!("unexpected output: {other:?}"),
         }
+    }
+
+    #[test]
+    fn pipeline_searches_within_prior_file_state_and_filters_results() {
+        let engine = sample_engine();
+
+        let output = run_output(
+            &engine,
+            "glob src/*.rs | search needle | filter b.rs | count",
+        );
+
+        match output {
+            PipelineOutput::Count { kind, count } => {
+                assert_eq!(kind, "results");
+                assert_eq!(count, 1);
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_filters_sorts_and_limits_files() {
+        let engine = sample_engine();
+
+        let output = run_output(&engine, "glob src/*.rs | filter src/ | sort | limit 1");
+
+        match output {
+            PipelineOutput::Files { items } => assert_eq!(items, vec!["src/a.rs"]),
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_supports_fuzzy_outline_deps_and_read_outputs() {
+        let engine = sample_engine();
+
+        match run_output(&engine, "fuzzy a.rs | outline") {
+            PipelineOutput::Outlines { items } => {
+                assert_eq!(items[0].path, "src/a.rs");
+                assert!(items[0].symbols.iter().any(|symbol| symbol.name == "alpha"));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        match run_output(&engine, "glob src/b.rs | deps") {
+            PipelineOutput::Deps { items } => {
+                assert_eq!(items[0].path, "src/b.rs");
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        match run_output(&engine, "glob README.md | read") {
+            PipelineOutput::Reads { items } => {
+                assert_eq!(items[0].path, "README.md");
+                assert!(items[0].content.contains("needle docs"));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_reports_usage_and_command_errors() {
+        let engine = sample_engine();
+
+        match run_output(&engine, " ") {
+            PipelineOutput::Error { message } => assert!(message.contains("Usage: lexa pipeline")),
+            other => panic!("unexpected output: {other:?}"),
+        }
+
+        for pipeline in ["glob", "fuzzy", "search", "filter"] {
+            match run_output(&engine, pipeline) {
+                PipelineOutput::Error { message } => assert!(message.contains("requires")),
+                other => panic!("unexpected output for {pipeline}: {other:?}"),
+            }
+        }
+
+        match run_output(&engine, "explode") {
+            PipelineOutput::Error { message } => {
+                assert!(message.contains("Unknown pipeline command"));
+            }
+            other => panic!("unexpected output: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_output_renders_and_serializes_all_variants() {
+        let results = PipelineOutput::Results {
+            items: vec![SearchResult {
+                path: "src/main.rs".to_string(),
+                line_num: 3,
+                line_text: "needle".to_string(),
+            }],
+        };
+        assert_eq!(results.render(), "src/main.rs:3: needle");
+        assert_eq!(results.to_json("search needle")["result_type"], "results");
+
+        let outlines = PipelineOutput::Outlines {
+            items: vec![OutlineItem {
+                path: "src/main.rs".to_string(),
+                symbols: vec![],
+            }],
+        };
+        assert!(outlines.render().contains("src/main.rs (0 symbols):"));
+        assert_eq!(outlines.to_json("outline")["count"], 1);
+
+        let deps = PipelineOutput::Deps {
+            items: vec![DependencyItem {
+                path: "src/main.rs".to_string(),
+                depends_on: vec!["src/lib.rs".to_string()],
+                imported_by: vec!["tests/main.rs".to_string()],
+            }],
+        };
+        assert!(deps.render().contains("depends on: src/lib.rs"));
+        assert_eq!(deps.to_json("deps")["result_type"], "deps");
+
+        let reads = PipelineOutput::Reads {
+            items: vec![ReadItem {
+                path: "src/main.rs".to_string(),
+                content: "fn main() {}".to_string(),
+            }],
+        };
+        assert!(reads.render().contains("=== src/main.rs ==="));
+        assert_eq!(reads.to_json("read")["result_type"], "reads");
+
+        let files = PipelineOutput::Files {
+            items: vec!["src/main.rs".to_string()],
+        };
+        assert_eq!(files.render(), "src/main.rs");
+        assert_eq!(files.to_json("glob")["count"], 1);
+
+        let count = PipelineOutput::Count {
+            kind: "files".to_string(),
+            count: 2,
+        };
+        assert_eq!(count.render(), "2 files");
+        assert_eq!(count.to_json("count")["kind"], "files");
+
+        let error = PipelineOutput::Error {
+            message: "bad".to_string(),
+        };
+        assert_eq!(error.render(), "bad");
+        assert_eq!(error.to_json("bad")["message"], "bad");
     }
 }

@@ -105,3 +105,52 @@ fn parse_node(node: tree_sitter::Node, source: &str, outline: &mut FileOutline) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_ruby_classes_modules_methods_and_requires() {
+        let outline = RubyParser.parse(
+            "app.rb",
+            r#"
+require "json"
+require_relative "support/tool"
+
+module Billing
+end
+
+class Invoice
+  def total
+    42
+  end
+
+  def self.build
+    new
+  end
+end
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Ruby);
+        assert!(outline.imports.iter().any(|import| import.contains("json")));
+        assert!(outline
+            .imports
+            .iter()
+            .any(|import| import.contains("support/tool")));
+        assert!(names(&outline, SymbolKind::Module).contains(&"Billing".to_string()));
+        assert!(names(&outline, SymbolKind::ClassDef).contains(&"Invoice".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"total".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"build".to_string()));
+    }
+}

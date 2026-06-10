@@ -119,3 +119,47 @@ fn parse_node(node: tree_sitter::Node, source: &str, outline: &mut FileOutline) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_php_symbols_and_namespace_imports() {
+        let outline = PhpParser.parse(
+            "app.php",
+            r#"<?php
+use App\Service\Client;
+
+function helper() {}
+
+interface Contract {}
+trait LogsThings {}
+
+class Controller {
+    public function handle() {}
+}
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Php);
+        assert!(outline
+            .imports
+            .iter()
+            .any(|import| import.contains("Client")));
+        assert!(names(&outline, SymbolKind::Function).contains(&"helper".to_string()));
+        assert!(names(&outline, SymbolKind::InterfaceDef).contains(&"Contract".to_string()));
+        assert!(names(&outline, SymbolKind::TraitDef).contains(&"LogsThings".to_string()));
+        assert!(names(&outline, SymbolKind::ClassDef).contains(&"Controller".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"handle".to_string()));
+    }
+}

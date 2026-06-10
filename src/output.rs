@@ -56,3 +56,56 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
     }
     (year, month as u32, day as u32)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Symbol, SymbolKind};
+
+    #[test]
+    fn formats_unix_milliseconds_as_utc() {
+        assert_eq!(format_unix_ms_utc(0), "unknown");
+        assert_eq!(format_unix_ms_utc(1), "1970-01-01T00:00:00.001Z");
+        assert_eq!(
+            format_unix_ms_utc(1_582_934_400_123),
+            "2020-02-29T00:00:00.123Z"
+        );
+        assert_eq!(
+            format_unix_ms_utc(1_704_067_199_999),
+            "2023-12-31T23:59:59.999Z"
+        );
+    }
+
+    #[test]
+    fn serializes_rich_results_with_and_without_scope() {
+        let results = vec![
+            RichSearchResult {
+                path: "src/main.rs".to_string(),
+                line_num: 7,
+                line_text: "fn main() {}".to_string(),
+                scope: Some(Symbol {
+                    name: "main".to_string(),
+                    kind: SymbolKind::Function,
+                    line_start: 7,
+                    line_end: 9,
+                    detail: Some("()".to_string()),
+                }),
+            },
+            RichSearchResult {
+                path: "README.md".to_string(),
+                line_num: 1,
+                line_text: "# Lexa".to_string(),
+                scope: None,
+            },
+        ];
+
+        let json = rich_results_json(&results);
+
+        assert_eq!(json[0]["path"], "src/main.rs");
+        assert_eq!(json[0]["line"], 7);
+        assert_eq!(json[0]["scope"]["name"], "main");
+        assert_eq!(json[0]["scope"]["kind"], "function");
+        assert_eq!(json[0]["scope"]["detail"], "()");
+        assert!(json[1]["scope"].is_null());
+    }
+}
