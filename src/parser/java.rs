@@ -121,3 +121,51 @@ fn parse_node(node: tree_sitter::Node, source: &str, outline: &mut FileOutline) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_java_imports_classes_interfaces_fields_and_methods() {
+        let outline = JavaParser.parse(
+            "App.java",
+            r#"
+import java.util.List;
+
+interface Repository {
+  void save();
+}
+
+class App {
+  private String name;
+
+  App(String name) {
+    this.name = name;
+  }
+
+  String label() {
+    return name;
+  }
+}
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Java);
+        assert!(outline.imports.iter().any(|import| import.contains("List")));
+        assert!(names(&outline, SymbolKind::InterfaceDef).contains(&"Repository".to_string()));
+        assert!(names(&outline, SymbolKind::ClassDef).contains(&"App".to_string()));
+        assert!(names(&outline, SymbolKind::Variable).contains(&"name".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"App".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"label".to_string()));
+    }
+}

@@ -1766,4 +1766,14 @@ mod tests {
             _ => panic!("expected mcp command"),
         }
     }
+
+    #[test]
+    fn parse_line_range_supports_single_bounded_and_open_ranges() {
+        assert_eq!(parse_line_range("7").unwrap(), (Some(7), Some(7)));
+        assert_eq!(parse_line_range("3-9").unwrap(), (Some(3), Some(9)));
+        assert_eq!(parse_line_range("-9").unwrap(), (None, Some(9)));
+        assert_eq!(parse_line_range("3-").unwrap(), (Some(3), None));
+        assert!(parse_line_range("abc").is_err());
+        assert!(parse_line_range("3-abc").is_err());
+    }
 }

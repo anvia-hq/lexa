@@ -168,3 +168,46 @@ fn get_function_signature(node: tree_sitter::Node, source: &str) -> String {
 
     format!("fn {params} -> {return_type}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_zig_declarations_functions_and_tests() {
+        let outline = ZigParser.parse(
+            "main.zig",
+            r#"
+const std = @import("std");
+var counter: usize = 0;
+const Handler = struct {};
+const Mode = enum { fast, slow };
+const Payload = union { id: u32 };
+
+pub fn run(value: usize) usize {
+    return value + counter;
+}
+
+test "run returns value" {
+    try std.testing.expect(run(1) == 1);
+}
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Zig);
+        assert!(names(&outline, SymbolKind::Function).contains(&"run".to_string()));
+        assert!(outline
+            .symbols
+            .iter()
+            .any(|symbol| symbol.kind == SymbolKind::TestDecl));
+    }
+}

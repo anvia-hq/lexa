@@ -216,3 +216,73 @@ fn extract_c_type_name(node: tree_sitter::Node, source: &str) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_c_declarations_and_preprocessor_symbols() {
+        let outline = CParser.parse(
+            "main.c",
+            r#"
+#include <stdio.h>
+#define LIMIT 10
+
+typedef struct User User;
+struct User { int id; };
+enum Mode { Fast };
+union Payload { int id; };
+
+int add(int a, int b) {
+  return a + b;
+}
+"#,
+        );
+
+        assert_eq!(outline.language, Language::C);
+        assert!(outline
+            .imports
+            .iter()
+            .any(|import| import.contains("stdio")));
+        assert!(names(&outline, SymbolKind::MacroDef).contains(&"LIMIT".to_string()));
+        assert!(names(&outline, SymbolKind::StructDef).contains(&"User".to_string()));
+        assert!(names(&outline, SymbolKind::EnumDef).contains(&"Mode".to_string()));
+        assert!(names(&outline, SymbolKind::UnionDef).contains(&"Payload".to_string()));
+        assert!(names(&outline, SymbolKind::Function).contains(&"add".to_string()));
+    }
+
+    #[test]
+    fn indexes_cpp_classes_namespaces_and_functions() {
+        let outline = CppParser.parse(
+            "app.cpp",
+            r#"
+#include <vector>
+
+namespace demo {
+class Widget {};
+
+int build() {
+  return 1;
+}
+}
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Cpp);
+        assert!(outline
+            .imports
+            .iter()
+            .any(|import| import.contains("vector")));
+        assert!(names(&outline, SymbolKind::Module).contains(&"demo".to_string()));
+    }
+}

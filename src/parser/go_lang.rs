@@ -140,3 +140,49 @@ impl Parser for GoParser {
         outline
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_go_imports_types_functions_methods_and_values() {
+        let outline = GoParser.parse(
+            "main.go",
+            r#"
+package main
+
+import "fmt"
+
+type User struct { Name string }
+type Store interface { Save(User) error }
+type ID string
+
+const DefaultName = "A"
+var current User
+
+func Load(name string) User { return User{Name: name} }
+func (u User) Label() string { return u.Name }
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Go);
+        assert!(outline.imports.iter().any(|import| import.contains("fmt")));
+        assert!(names(&outline, SymbolKind::StructDef).contains(&"User".to_string()));
+        assert!(names(&outline, SymbolKind::InterfaceDef).contains(&"Store".to_string()));
+        assert!(names(&outline, SymbolKind::TypeAlias).contains(&"ID".to_string()));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"DefaultName".to_string()));
+        assert!(names(&outline, SymbolKind::Variable).contains(&"current".to_string()));
+        assert!(names(&outline, SymbolKind::Function).contains(&"Load".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"Label".to_string()));
+    }
+}

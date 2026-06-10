@@ -1416,6 +1416,42 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    fn server_for_root(root: &tempfile::TempDir) -> McpServer {
+        McpServer::new(
+            Engine::new(32),
+            root.path().to_path_buf(),
+            root.path().join(".lexa/graph.lexa"),
+            false,
+            false,
+        )
+    }
+
+    fn indexed_server(root: &tempfile::TempDir, files: &[(&str, &str)]) -> McpServer {
+        let mut engine = Engine::new(64);
+        for (path, content) in files {
+            let abs = root.path().join(path);
+            if let Some(parent) = abs.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&abs, content).unwrap();
+            engine.index_file(path, content);
+        }
+        McpServer::new(
+            engine,
+            root.path().to_path_buf(),
+            root.path().join(".lexa/graph.lexa"),
+            false,
+            false,
+        )
+    }
+
+    fn tool_err(result: Result<ToolOutput>) -> String {
+        match result {
+            Ok(_) => panic!("expected tool error"),
+            Err(err) => err.to_string(),
+        }
+    }
+
     #[test]
     fn read_message_accepts_newline_delimited_json() {
         let mut reader = Cursor::new(br#"{"jsonrpc":"2.0","id":0,"method":"initialize"}"#.to_vec());
@@ -1517,6 +1553,17 @@ mod tests {
     }
 
     #[test]
+    fn tool_error_response_includes_structured_content_when_enabled() {
+        let response = tool_response(json!(1), Err(anyhow::anyhow!("bad input")), true);
+
+        assert_eq!(response["result"]["isError"], Value::Bool(true));
+        assert_eq!(
+            response["result"]["structuredContent"]["error"],
+            "bad input"
+        );
+    }
+
+    #[test]
     fn initialize_uses_requested_protocol_version() {
         let params = json!({ "protocolVersion": "2025-11-25" });
 
@@ -1556,13 +1603,7 @@ mod tests {
     #[test]
     fn outline_missing_file_reports_clean_error() {
         let root = tempfile::tempdir().unwrap();
-        let server = McpServer::new(
-            Engine::new(32),
-            root.path().to_path_buf(),
-            root.path().join(".lexa/graph.lexa"),
-            false,
-            false,
-        );
+        let server = server_for_root(&root);
 
         let err = match server.tool_outline("apps/desktop/CLAUDE.md") {
             Ok(_) => panic!("expected missing file error"),
@@ -1572,6 +1613,196 @@ mod tests {
         assert_eq!(err, "file not found: apps/desktop/CLAUDE.md");
         assert!(!err.contains(root.path().to_string_lossy().as_ref()));
         assert!(!err.contains("canonicalize"));
+    }
+
+    #[test]
+    fn read_tool_returns_hash_content_ranges_and_unchanged_response() {
+        let root = tempfile::tempdir().unwrap();
+        let server = indexed_server(&root, &[("src/app.rs", "one\ntwo\nthree\n")]);
+
+        let full = server.tool_read(&json!({"path": "src/app.rs"})).unwrap();
+        let hash = full.structured["hash"].as_str().unwrap().to_string();
+        assert!(full.text.starts_with("hash:"));
+        assert_eq!(full.structured["content"], "one\ntwo\nthree\n");
+        assert_eq!(full.structured["unchanged"], false);
+
+        let ranged = server
+            .tool_read(&json!({
+                "path": "src/app.rs",
+                "line_start": 2,
+                "line_end": 2,
+                "compact": true
+            }))
+            .unwrap();
+        assert_eq!(ranged.structured["line_start"], 2);
+        assert_eq!(ranged.structured["line_end"], 2);
+        assert_eq!(ranged.structured["compact"], true);
+        assert!(ranged.structured["content"]
+            .as_str()
+            .unwrap()
+            .contains("two"));
+
+        let unchanged = server
+            .tool_read(&json!({"path": "src/app.rs", "if_hash": hash}))
+            .unwrap();
+        assert!(unchanged.text.starts_with("unchanged:"));
+        assert_eq!(unchanged.structured["unchanged"], true);
+        assert_eq!(unchanged.structured["content"], "");
+    }
+
+    #[test]
+    fn patch_tool_supports_dry_run_real_change_unchanged_and_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = indexed_server(&root, &[("src/app.rs", "one\ntwo\n")]);
+
+        let dry_run = server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "op": "replace",
+                "range_start": 2,
+                "content": "TWO",
+                "dry_run": true
+            }))
+            .unwrap();
+        assert_eq!(dry_run.structured["dry_run"], true);
+        assert_eq!(dry_run.structured["changed"], true);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("src/app.rs")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        let changed = server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "op": "replace",
+                "range_start": 2,
+                "content": "TWO"
+            }))
+            .unwrap();
+        assert_eq!(changed.structured["changed"], true);
+        assert_eq!(changed.structured["op"], "replace");
+        assert_eq!(changed.structured["change_sequence"], 2);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("src/app.rs")).unwrap(),
+            "one\nTWO\n"
+        );
+        assert!(server
+            .engine
+            .read_file("src/app.rs", None, None)
+            .unwrap()
+            .contains("TWO"));
+
+        let unchanged = server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "op": "replace",
+                "range_start": 2,
+                "content": "TWO"
+            }))
+            .unwrap();
+        assert_eq!(unchanged.structured["changed"], false);
+        assert_eq!(unchanged.structured["line_count"], 2);
+
+        let bad_op = tool_err(server.tool_patch(&json!({"path": "src/app.rs", "op": "move"})));
+        assert!(bad_op.contains("op must be replace, insert, or delete"));
+
+        let bad_hash = tool_err(server.tool_patch(&json!({
+            "path": "src/app.rs",
+            "op": "delete",
+            "range_start": 1,
+            "if_hash": "bad"
+        })));
+        assert!(bad_hash.contains("hash mismatch"));
+    }
+
+    #[test]
+    fn create_tool_supports_dry_run_real_create_and_overwrite_rules() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        let mut server = server_for_root(&root);
+
+        let dry_run = server
+            .tool_create(&json!({
+                "path": "src/new.rs",
+                "content": "fn new() {}\n",
+                "dry_run": true
+            }))
+            .unwrap();
+        assert_eq!(dry_run.structured["dry_run"], true);
+        assert_eq!(dry_run.structured["changed"], false);
+        assert!(!root.path().join("src/new.rs").exists());
+
+        let created = server
+            .tool_create(&json!({
+                "path": "src/new.rs",
+                "content": "fn new() {}\n"
+            }))
+            .unwrap();
+        assert_eq!(created.structured["changed"], true);
+        assert_eq!(created.structured["change_sequence"], 1);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("src/new.rs")).unwrap(),
+            "fn new() {}\n"
+        );
+        assert!(server
+            .engine
+            .read_file("src/new.rs", None, None)
+            .unwrap()
+            .contains("fn new"));
+
+        let exists = tool_err(server.tool_create(&json!({
+            "path": "src/new.rs",
+            "content": "blocked"
+        })));
+        assert!(exists.contains("file already exists"));
+
+        let overwritten = server
+            .tool_create(&json!({
+                "path": "src/new.rs",
+                "content": "fn updated() {}\n",
+                "overwrite": true
+            }))
+            .unwrap();
+        assert_eq!(overwritten.structured["changed"], true);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("src/new.rs")).unwrap(),
+            "fn updated() {}\n"
+        );
+    }
+
+    #[test]
+    fn changes_recent_and_status_reflect_session_state() {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = indexed_server(&root, &[("src/app.rs", "fn app() {}\n")]);
+        let since = server.engine.store().current_seq();
+
+        let empty_changes = server.tool_changes(since);
+        assert_eq!(empty_changes.structured["count"], 0);
+
+        server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "op": "insert",
+                "after": 1,
+                "content": "fn next() {}"
+            }))
+            .unwrap();
+
+        let changes = server.tool_changes(since);
+        assert_eq!(changes.structured["count"], 1);
+        assert_eq!(changes.structured["changes"][0]["path"], "src/app.rs");
+        assert_eq!(changes.structured["change_history_persisted"], false);
+
+        let recent = server.tool_recent(5);
+        assert_eq!(recent.structured["count"], 1);
+        assert_eq!(recent.structured["files"][0]["path"], "src/app.rs");
+        assert!(recent.text.contains("src/app.rs"));
+
+        let status = server.tool_status();
+        assert_eq!(status.structured["files_indexed"], 1);
+        assert_eq!(status.structured["seq"], since + 1);
+        assert_eq!(status.structured["change_history_persisted"], false);
+        assert_eq!(status.structured["graph"]["exists"], false);
     }
 
     #[test]

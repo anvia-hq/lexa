@@ -203,3 +203,62 @@ fn parse_rust_node(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(outline: &FileOutline, kind: SymbolKind) -> Vec<String> {
+        outline
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.kind == kind)
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn indexes_rust_items_imports_and_impl_methods() {
+        let outline = RustParser.parse(
+            "lib.rs",
+            r#"
+use std::fmt;
+
+pub const LIMIT: usize = 10;
+static NAME: &str = "lexa";
+
+pub struct Engine;
+enum Mode { Fast }
+trait Run { fn run(&self); }
+type Id = String;
+
+macro_rules! make_id { () => {}; }
+
+mod nested {}
+
+impl Engine {
+    pub fn new() -> Self { Self }
+}
+
+fn helper(value: usize) -> usize { value }
+"#,
+        );
+
+        assert_eq!(outline.language, Language::Rust);
+        assert!(outline
+            .imports
+            .iter()
+            .any(|import| import.contains("std::fmt")));
+        assert!(names(&outline, SymbolKind::Constant).contains(&"LIMIT".to_string()));
+        assert!(names(&outline, SymbolKind::Variable).contains(&"NAME".to_string()));
+        assert!(names(&outline, SymbolKind::StructDef).contains(&"Engine".to_string()));
+        assert!(names(&outline, SymbolKind::EnumDef).contains(&"Mode".to_string()));
+        assert!(names(&outline, SymbolKind::TraitDef).contains(&"Run".to_string()));
+        assert!(names(&outline, SymbolKind::TypeAlias).contains(&"Id".to_string()));
+        assert!(names(&outline, SymbolKind::MacroDef).contains(&"make_id".to_string()));
+        assert!(names(&outline, SymbolKind::Module).contains(&"nested".to_string()));
+        assert!(names(&outline, SymbolKind::ImplBlock).contains(&"Engine".to_string()));
+        assert!(names(&outline, SymbolKind::Method).contains(&"new".to_string()));
+        assert!(names(&outline, SymbolKind::Function).contains(&"helper".to_string()));
+    }
+}
