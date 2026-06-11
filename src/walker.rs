@@ -66,52 +66,6 @@ pub struct WalkedFileMeta {
     pub indexable: bool,
 }
 
-#[allow(dead_code)]
-pub fn walk_project(root: impl AsRef<Path>) -> Vec<WalkedFile> {
-    let mut files = Vec::new();
-    let root = root.as_ref();
-
-    let mut builder = WalkBuilder::new(root);
-    builder
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .follow_links(false)
-        .same_file_system(true);
-
-    for entry in builder.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        if entry.file_type().is_none_or(|ft| ft.is_dir()) {
-            continue;
-        }
-
-        let path = entry.path();
-        let Some(meta) = walked_file_meta(root, path) else {
-            continue;
-        };
-        if !meta.indexable {
-            continue;
-        }
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        files.push(WalkedFile {
-            path: meta.path,
-            content,
-            modified_ms: meta.modified_ms,
-        });
-    }
-
-    files
-}
-
 pub fn walk_project_meta(root: impl AsRef<Path>) -> Vec<WalkedFileMeta> {
     let mut files = Vec::new();
     let root = root.as_ref();

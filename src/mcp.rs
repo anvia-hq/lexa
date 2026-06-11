@@ -16,6 +16,7 @@ use crate::snapshot;
 use crate::store;
 
 const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+const MAX_MCP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct McpServer {
     engine: Engine,
@@ -1065,6 +1066,11 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
     }
 
     let len = content_length.context("missing Content-Length")?;
+    if len > MAX_MCP_MESSAGE_BYTES {
+        bail!(
+            "Content-Length {len} exceeds maximum MCP message size of {MAX_MCP_MESSAGE_BYTES} bytes"
+        );
+    }
     let mut body = vec![0u8; len];
     reader.read_exact(&mut body)?;
     Ok(Some(McpMessage {
@@ -1476,6 +1482,19 @@ mod tests {
 
         assert_eq!(message.framing, StdioFraming::ContentLength);
         assert_eq!(message.body, body);
+    }
+
+    #[test]
+    fn read_message_rejects_oversized_content_length_before_reading_body() {
+        let framed = format!("Content-Length: {}\r\n\r\n", MAX_MCP_MESSAGE_BYTES + 1);
+        let mut reader = Cursor::new(framed.into_bytes());
+
+        let err = match read_message(&mut reader) {
+            Ok(_) => panic!("expected oversized message error"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("exceeds maximum MCP message size"));
     }
 
     #[test]

@@ -285,6 +285,23 @@ impl SnapshotData {
             forward_deps: self.forward_deps,
         }
     }
+
+    #[cfg(test)]
+    pub fn from_raw(raw: SnapshotDataRaw) -> Self {
+        Self {
+            header: SnapshotHeader {
+                magic: *MAGIC,
+                version: FORMAT_VERSION,
+                file_count: raw.file_meta.len() as u32,
+                created_at: 0,
+                root_hash: 0,
+            },
+            outlines: raw.outlines,
+            file_meta: raw.file_meta,
+            contents: raw.contents,
+            forward_deps: raw.forward_deps,
+        }
+    }
 }
 
 #[cfg(test)]

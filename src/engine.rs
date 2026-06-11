@@ -159,10 +159,6 @@ impl DepGraph {
         }
     }
 
-    pub fn set_deps(&mut self, path: &str, deps: Vec<String>) {
-        self.set_resolution(path, deps, Vec::new());
-    }
-
     pub fn set_resolution(
         &mut self,
         path: &str,
@@ -729,20 +725,6 @@ impl Engine {
             .collect()
     }
 
-    pub fn get_tree(&self) -> String {
-        let mut output = String::new();
-        for (path, meta) in self.file_map() {
-            output.push_str(&format!(
-                "{:<60} {:>8} {:>6}L {:>4} sym\n",
-                path,
-                meta.language.as_str(),
-                meta.line_count,
-                meta.symbol_count
-            ));
-        }
-        output
-    }
-
     pub fn file_map(&self) -> Vec<(String, FileMeta)> {
         let mut entries: Vec<(&String, &FileMeta)> = self.file_meta.iter().collect();
         entries.sort_by_key(|(path, _)| path.as_str());
@@ -871,11 +853,6 @@ impl Engine {
         }
 
         results
-    }
-
-    pub fn build_context(&self, task: &str, max_results: usize) -> String {
-        let details = self.build_context_details(task, max_results);
-        render_context_details(&details)
     }
 
     pub fn build_context_with_options(&self, task: &str, options: &ContextOptions) -> String {
@@ -1612,19 +1589,6 @@ impl Engine {
         })
     }
 
-    pub fn symbol_source(
-        &self,
-        path: &str,
-        symbol: &Symbol,
-        context_lines: u32,
-    ) -> Option<(u32, u32, String)> {
-        let outline = self.outlines.get(path)?;
-        let start = symbol.line_start.saturating_sub(context_lines).max(1);
-        let end = (symbol.line_end + context_lines).min(outline.line_count);
-        self.read_file(path, Some(start), Some(end))
-            .map(|content| (start, end, content))
-    }
-
     fn symbol_source_bounded(
         &self,
         path: &str,
@@ -1841,6 +1805,16 @@ impl Engine {
 
     pub fn load_from_snapshot(&mut self, data: snapshot::SnapshotData) {
         let raw = data.into_raw();
+
+        self.outlines.clear();
+        self.file_meta.clear();
+        self.contents.clear();
+        self.content_cache.clear();
+        self.symbol_index = SymbolIndex::new();
+        self.trigram_index = TrigramIndex::new();
+        self.word_index = WordIndex::new();
+        self.dep_graph.clear();
+        self.store = Store::new();
 
         for (path, outline) in raw.outlines {
             self.symbol_index.index_file(&outline);
@@ -2913,6 +2887,27 @@ mod tests {
         let data = engine.to_snapshot_data();
 
         assert_eq!(data.contents.len(), 3);
+    }
+
+    #[test]
+    fn load_from_snapshot_replaces_existing_engine_state() {
+        let mut source = Engine::new(4);
+        source.index_file("fresh.rs", "fn fresh() {}\n");
+        let data = source.to_snapshot_data();
+
+        let mut engine = Engine::new(4);
+        engine.index_file("stale.rs", "fn stale() {}\n");
+
+        engine.load_from_snapshot(snapshot::SnapshotData::from_raw(data));
+
+        assert!(engine
+            .find_symbol("fresh")
+            .iter()
+            .any(|hit| hit.path == "fresh.rs"));
+        assert!(engine.find_symbol("stale").is_empty());
+        assert!(engine.read_file("stale.rs", None, None).is_none());
+        assert!(engine.file_map().iter().all(|(path, _)| path != "stale.rs"));
+        assert_eq!(engine.store().current_seq(), 0);
     }
 
     #[test]
