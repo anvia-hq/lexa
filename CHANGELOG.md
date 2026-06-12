@@ -4,6 +4,13 @@
 
 No changes yet.
 
+## v0.6.4 - 2026-06-12
+
+### Fixed
+
+- Resolved TypeScript ESM runtime import specifiers such as `./module.js` to matching `.ts`, `.tsx`, `.mts`, and `.cts` source files.
+- Resolved local Vite-style resource imports with query or hash suffixes such as `styles.css?url`.
+
 ## v0.6.3 - 2026-06-11
 
 ### Fixed
