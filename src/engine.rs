@@ -2648,9 +2648,19 @@ fn normalize_import_term(term: &str) -> String {
         .replace("::", "/");
 
     if normalized.starts_with("./") || normalized.starts_with("../") {
-        normalized
+        strip_import_resource_suffix(&normalized).to_string()
     } else {
         normalized.replace('.', "/")
+    }
+}
+
+fn strip_import_resource_suffix(term: &str) -> &str {
+    let query_index = term.find('?');
+    let hash_index = term.find('#');
+    match (query_index, hash_index) {
+        (Some(query), Some(hash)) => &term[..query.min(hash)],
+        (Some(index), None) | (None, Some(index)) => &term[..index],
+        (None, None) => term,
     }
 }
 
@@ -2685,6 +2695,12 @@ fn exact_import_candidates(importer_path: &str, term: &str) -> Vec<(i32, String)
             &mut seen_candidates,
             1200 + specificity,
             base.clone(),
+        );
+        push_typescript_source_extension_candidates(
+            &mut candidates,
+            &mut seen_candidates,
+            1190 + specificity,
+            &base,
         );
         for ext in IMPORT_FILE_EXTENSIONS {
             push_scored_candidate(
@@ -2793,8 +2809,8 @@ fn import_match_score(term: &str, path: &str) -> Option<i32> {
 }
 
 const IMPORT_FILE_EXTENSIONS: &[&str] = &[
-    "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "rb", "php", "zig", "c", "h", "cpp", "hpp",
-    "cc", "hh", "cxx", "hxx",
+    "rs", "py", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "go", "java", "rb", "php",
+    "zig", "c", "h", "cpp", "hpp", "cc", "hh", "cxx", "hxx",
 ];
 
 const IMPORT_INDEX_FILES: &[&str] = &[
@@ -2813,6 +2829,43 @@ fn strip_known_extension(path: &str) -> &str {
         }
     }
     path
+}
+
+fn push_typescript_source_extension_candidates(
+    candidates: &mut Vec<(i32, String)>,
+    seen: &mut HashSet<String>,
+    score: i32,
+    base: &str,
+) {
+    let Some((stem, source_exts)) = typescript_source_extensions_for_runtime_import(base) else {
+        return;
+    };
+    for (index, ext) in source_exts.iter().enumerate() {
+        push_scored_candidate(
+            candidates,
+            seen,
+            score - index as i32,
+            format!("{stem}.{ext}"),
+        );
+    }
+}
+
+fn typescript_source_extensions_for_runtime_import(
+    base: &str,
+) -> Option<(&str, &'static [&'static str])> {
+    if let Some(stem) = base.strip_suffix(".js") {
+        return Some((stem, &["ts", "tsx"]));
+    }
+    if let Some(stem) = base.strip_suffix(".jsx") {
+        return Some((stem, &["tsx"]));
+    }
+    if let Some(stem) = base.strip_suffix(".mjs") {
+        return Some((stem, &["mts"]));
+    }
+    if let Some(stem) = base.strip_suffix(".cjs") {
+        return Some((stem, &["cts"]));
+    }
+    None
 }
 
 fn fuzzy_match(pattern: &[char], text: &str) -> Option<f32> {
@@ -3103,6 +3156,95 @@ mod tests {
             engine.get_depends_on("src/feature/app.ts"),
             vec!["src/client.ts"]
         );
+    }
+
+    #[test]
+    fn dependency_graph_resolves_typescript_sources_from_esm_js_specifiers() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "packages/email/src/client.ts",
+            "import { EmailError } from './errors.js';\nimport type { SendOptions } from './types.js';\n",
+        );
+        engine.index_file(
+            "packages/email/src/errors.ts",
+            "export class EmailError extends Error {}\n",
+        );
+        engine.index_file(
+            "packages/email/src/types.ts",
+            "export type SendOptions = { to: string };\n",
+        );
+
+        assert_eq!(
+            engine.get_depends_on("packages/email/src/client.ts"),
+            vec![
+                "packages/email/src/errors.ts".to_string(),
+                "packages/email/src/types.ts".to_string()
+            ]
+        );
+        assert!(engine
+            .get_unresolved_imports("packages/email/src/client.ts")
+            .is_empty());
+    }
+
+    #[test]
+    fn dependency_graph_resolves_tsx_sources_from_jsx_specifiers() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/app.tsx", "import Component from './component.jsx';\n");
+        engine.index_file(
+            "src/component.tsx",
+            "export default function Component() { return null; }\n",
+        );
+
+        assert_eq!(
+            engine.get_depends_on("src/app.tsx"),
+            vec!["src/component.tsx"]
+        );
+        assert!(engine.get_unresolved_imports("src/app.tsx").is_empty());
+    }
+
+    #[test]
+    fn dependency_graph_resolves_mts_and_cts_sources_from_runtime_specifiers() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/app.ts",
+            "import { esm } from './esm.mjs';\nimport { cjs } from './cjs.cjs';\n",
+        );
+        engine.index_file("src/esm.mts", "export const esm = true;\n");
+        engine.index_file("src/cjs.cts", "export const cjs = true;\n");
+
+        assert_eq!(
+            engine.get_depends_on("src/app.ts"),
+            vec!["src/cjs.cts".to_string(), "src/esm.mts".to_string()]
+        );
+        assert!(engine.get_unresolved_imports("src/app.ts").is_empty());
+    }
+
+    #[test]
+    fn dependency_graph_resolves_local_vite_query_imports() {
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "apps/admin/src/routes/__root.tsx",
+            "import appCss from '../styles.css?url';\n",
+        );
+        engine.index_file("apps/admin/src/styles.css", "body { color: black; }\n");
+
+        assert_eq!(
+            engine.get_depends_on("apps/admin/src/routes/__root.tsx"),
+            vec!["apps/admin/src/styles.css"]
+        );
+        assert!(engine
+            .get_unresolved_imports("apps/admin/src/routes/__root.tsx")
+            .is_empty());
+    }
+
+    #[test]
+    fn dependency_graph_prefers_real_js_file_over_typescript_source_fallback() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/app.ts", "import { runtime } from './runtime.js';\n");
+        engine.index_file("src/runtime.js", "export const runtime = 'js';\n");
+        engine.index_file("src/runtime.ts", "export const runtime = 'ts';\n");
+
+        assert_eq!(engine.get_depends_on("src/app.ts"), vec!["src/runtime.js"]);
     }
 
     #[test]
