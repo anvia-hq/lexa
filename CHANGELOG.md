@@ -4,6 +4,12 @@
 
 No changes yet.
 
+## v0.6.5 - 2026-06-17
+
+### Added
+
+- Added `lexa mcp --log-file <path>` to append MCP startup and runtime diagnostics to a plain-text log file.
+
 ## v0.6.4 - 2026-06-12
 
 ### Fixed
