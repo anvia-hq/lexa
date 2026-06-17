@@ -44,6 +44,20 @@ Cursor, etc.) with:
 See the [MCP setup page](/docs/mcp) for the full example and the available
 flags.
 
+For MCP startup issues, add `--log-file <path>` so Lexa appends diagnostics
+to a file you can inspect or attach to an issue:
+
+```json
+{
+  "mcpServers": {
+    "lexa": {
+      "command": "lexa",
+      "args": ["mcp", "/path/to/project", "--log-file", "/tmp/lexa-mcp.log"]
+    }
+  }
+}
+```
+
 ## Graph path
 
 The default location is `<project>/.lexa/graph.lexa`. See

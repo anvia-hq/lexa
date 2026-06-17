@@ -301,6 +301,9 @@ enum Commands {
 
         #[arg(long = "structured-content", alias = "json-output")]
         structured_content: bool,
+
+        #[arg(long = "log-file")]
+        log_file: Option<PathBuf>,
     },
 }
 
@@ -474,7 +477,15 @@ fn main() -> Result<()> {
             no_refresh,
             debounce,
             structured_content,
-        } => cmd_mcp(path, *no_refresh, *debounce, *structured_content, &cli),
+            log_file,
+        } => cmd_mcp(
+            path,
+            *no_refresh,
+            *debounce,
+            *structured_content,
+            log_file.as_ref(),
+            &cli,
+        ),
     }
 }
 
@@ -604,53 +615,131 @@ fn cmd_mcp(
     no_refresh: bool,
     debounce_ms: u64,
     structured_content: bool,
+    log_file: Option<&PathBuf>,
     cli: &Cli,
 ) -> Result<()> {
-    let root = std::fs::canonicalize(path)?;
+    let mut diagnostics = match log_file {
+        Some(path) => mcp::Diagnostics::append_to_path(path)?,
+        None => mcp::Diagnostics::disabled(),
+    };
+    diagnostics.info(format!(
+        "lexa {} starting MCP server",
+        env!("CARGO_PKG_VERSION")
+    ));
+    diagnostics.info(format!("requested_root={}", path.display()));
+
+    let root = match std::fs::canonicalize(path) {
+        Ok(root) => root,
+        Err(err) => {
+            diagnostics.error(format!(
+                "failed to resolve MCP root {}: {err}",
+                path.display()
+            ));
+            return Err(err.into());
+        }
+    };
     let snap_path = project_graph_path(&root, cli);
     let mut engine = engine::Engine::new(16384);
+    let include_structured_content = structured_content || cli.json;
+    diagnostics.info(format!(
+        "root={} graph={} persist_graph={} refresh={} watcher={} structured_content={}",
+        root.display(),
+        snap_path.display(),
+        !cli.no_graph,
+        !no_refresh,
+        !no_refresh,
+        include_structured_content
+    ));
 
     if !cli.no_graph && snap_path.exists() {
         match snapshot::load_snapshot_into_engine(&mut engine, &snap_path) {
-            Ok(count) => eprintln!("Loaded {} files from graph", count),
-            Err(err) => eprintln!("Warning: Failed to load graph: {err}"),
+            Ok(count) => mcp_info(
+                &mut diagnostics,
+                format!("Loaded {} files from graph", count),
+            ),
+            Err(err) => mcp_warn(&mut diagnostics, format!("Failed to load graph: {err}")),
         }
     }
 
     if engine.file_count() == 0 {
-        eprintln!("Indexing {} for MCP...", root.display());
+        mcp_info(
+            &mut diagnostics,
+            format!("Indexing {} for MCP...", root.display()),
+        );
         let count = engine.index_project(&root);
-        eprintln!("Indexed {} files", count);
+        mcp_info(&mut diagnostics, format!("Indexed {} files", count));
         if !cli.no_graph {
-            snapshot::write_snapshot(&engine, &snap_path)?;
-            eprintln!("Graph saved to {}", snap_path.display());
+            if let Err(err) = snapshot::write_snapshot(&engine, &snap_path) {
+                diagnostics.error(format!(
+                    "failed to save graph {}: {err}",
+                    snap_path.display()
+                ));
+                return Err(err);
+            }
+            mcp_info(
+                &mut diagnostics,
+                format!("Graph saved to {}", snap_path.display()),
+            );
         }
     } else if !no_refresh {
-        let summary = freshness::refresh_project(&mut engine, &root)?;
+        let summary = match freshness::refresh_project(&mut engine, &root) {
+            Ok(summary) => summary,
+            Err(err) => {
+                diagnostics.error(format!(
+                    "failed to refresh MCP graph for {}: {err}",
+                    root.display()
+                ));
+                return Err(err);
+            }
+        };
         if summary.changed() {
-            eprintln!(
-                "Refreshed MCP graph: {} indexed, {} removed",
-                summary.indexed, summary.removed
+            mcp_info(
+                &mut diagnostics,
+                format!(
+                    "Refreshed MCP graph: {} indexed, {} removed",
+                    summary.indexed, summary.removed
+                ),
             );
             if !cli.no_graph {
-                snapshot::write_snapshot(&engine, &snap_path)?;
-                eprintln!("Graph saved to {}", snap_path.display());
+                if let Err(err) = snapshot::write_snapshot(&engine, &snap_path) {
+                    diagnostics.error(format!(
+                        "failed to save graph {}: {err}",
+                        snap_path.display()
+                    ));
+                    return Err(err);
+                }
+                mcp_info(
+                    &mut diagnostics,
+                    format!("Graph saved to {}", snap_path.display()),
+                );
             }
         }
     }
 
-    let include_structured_content = structured_content || cli.json;
     let mut server = mcp::McpServer::new(
         engine,
         root,
         snap_path,
         !cli.no_graph,
         include_structured_content,
+        diagnostics,
     );
     if !no_refresh {
         server.enable_watcher(debounce_ms)?;
     }
     server.run()
+}
+
+fn mcp_info(diagnostics: &mut mcp::Diagnostics, message: impl AsRef<str>) {
+    let message = message.as_ref();
+    eprintln!("{message}");
+    diagnostics.info(message);
+}
+
+fn mcp_warn(diagnostics: &mut mcp::Diagnostics, message: impl AsRef<str>) {
+    let message = message.as_ref();
+    eprintln!("Warning: {message}");
+    diagnostics.warn(message);
 }
 
 fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Result<()> {
@@ -1751,6 +1840,19 @@ mod tests {
                 }) => assert!(structured_content),
                 _ => panic!("expected mcp command"),
             }
+        }
+    }
+
+    #[test]
+    fn mcp_accepts_log_file_flag() {
+        let cli =
+            Cli::try_parse_from(["lexa", "mcp", ".", "--log-file", "/tmp/lexa-mcp.log"]).unwrap();
+
+        match cli.command {
+            Some(Commands::Mcp { log_file, .. }) => {
+                assert_eq!(log_file, Some(PathBuf::from("/tmp/lexa-mcp.log")));
+            }
+            _ => panic!("expected mcp command"),
         }
     }
 
