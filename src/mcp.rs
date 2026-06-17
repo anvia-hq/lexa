@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
@@ -24,7 +25,12 @@ pub struct McpServer {
     graph_path: PathBuf,
     persist_graph: bool,
     include_structured_content: bool,
+    diagnostics: Diagnostics,
     watcher: Option<RuntimeWatcher>,
+}
+
+pub struct Diagnostics {
+    file: Option<File>,
 }
 
 struct RuntimeWatcher {
@@ -54,6 +60,43 @@ impl ToolOutput {
     }
 }
 
+impl Diagnostics {
+    pub fn disabled() -> Self {
+        Self { file: None }
+    }
+
+    pub fn append_to_path(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("failed to open MCP log file {}", path.display()))?;
+        Ok(Self { file: Some(file) })
+    }
+
+    pub fn info(&mut self, message: impl AsRef<str>) {
+        self.write("INFO", message.as_ref());
+    }
+
+    pub fn warn(&mut self, message: impl AsRef<str>) {
+        self.write("WARN", message.as_ref());
+    }
+
+    pub fn error(&mut self, message: impl AsRef<str>) {
+        self.write("ERROR", message.as_ref());
+    }
+
+    fn write(&mut self, level: &str, message: &str) {
+        let Some(file) = &mut self.file else {
+            return;
+        };
+        let timestamp = format_unix_ms_utc(now_ms());
+        if let Err(err) = writeln!(file, "{timestamp} {level} {message}") {
+            eprintln!("Warning: Failed to write MCP log file: {err}");
+        }
+    }
+}
+
 impl McpServer {
     pub fn new(
         engine: Engine,
@@ -61,6 +104,7 @@ impl McpServer {
         graph_path: PathBuf,
         persist_graph: bool,
         include_structured_content: bool,
+        diagnostics: Diagnostics,
     ) -> Self {
         Self {
             engine,
@@ -68,18 +112,34 @@ impl McpServer {
             graph_path,
             persist_graph,
             include_structured_content,
+            diagnostics,
             watcher: None,
         }
     }
 
     pub fn enable_watcher(&mut self, debounce_ms: u64) -> Result<()> {
         let (tx, rx) = channel();
-        let mut watcher = RecommendedWatcher::new(
+        let mut watcher = match RecommendedWatcher::new(
             tx,
             notify::Config::default().with_poll_interval(Duration::from_millis(debounce_ms)),
-        )?;
-        watcher.watch(&self.root, RecursiveMode::Recursive)?;
-        eprintln!("Watching {} for MCP graph freshness", self.root.display());
+        ) {
+            Ok(watcher) => watcher,
+            Err(err) => {
+                self.diagnostics
+                    .error(format!("failed to create MCP watcher: {err}"));
+                return Err(err.into());
+            }
+        };
+        if let Err(err) = watcher.watch(&self.root, RecursiveMode::Recursive) {
+            self.diagnostics.error(format!(
+                "failed to watch {} for MCP graph freshness: {err}",
+                self.root.display()
+            ));
+            return Err(err.into());
+        }
+        let message = format!("Watching {} for MCP graph freshness", self.root.display());
+        eprintln!("{message}");
+        self.diagnostics.info(message);
         self.watcher = Some(RuntimeWatcher {
             _watcher: watcher,
             rx,
@@ -93,29 +153,53 @@ impl McpServer {
         let mut reader = BufReader::new(stdin.lock());
         let mut writer = stdout.lock();
 
-        while let Some(message) = read_message(&mut reader)? {
+        loop {
+            let message = match read_message(&mut reader) {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(err) => {
+                    self.diagnostics
+                        .error(format!("failed to read MCP message: {err}"));
+                    return Err(err);
+                }
+            };
             let request: Value = match serde_json::from_slice(&message.body) {
                 Ok(value) => value,
                 Err(err) => {
-                    write_response(
+                    self.diagnostics
+                        .error(format!("failed to parse MCP request: {err}"));
+                    if let Err(write_err) = write_response(
                         &mut writer,
                         message.framing,
                         &json_rpc_error(None, -32700, &err.to_string()),
-                    )?;
+                    ) {
+                        self.diagnostics.error(format!(
+                            "failed to write MCP parse error response: {write_err}"
+                        ));
+                        return Err(write_err);
+                    }
                     continue;
                 }
             };
 
-            self.refresh_from_watcher()?;
+            if let Err(err) = self.refresh_from_watcher() {
+                self.diagnostics
+                    .error(format!("failed to refresh MCP graph from watcher: {err}"));
+                return Err(err);
+            }
 
             let id = request.get("id").cloned();
             let Some(method) = request.get("method").and_then(Value::as_str) else {
                 if id.is_some() {
-                    write_response(
+                    if let Err(err) = write_response(
                         &mut writer,
                         message.framing,
                         &json_rpc_error(id, -32600, "missing JSON-RPC method"),
-                    )?;
+                    ) {
+                        self.diagnostics
+                            .error(format!("failed to write MCP error response: {err}"));
+                        return Err(err);
+                    }
                 }
                 continue;
             };
@@ -123,7 +207,11 @@ impl McpServer {
             let Some(response) = self.handle(method, id, request.get("params")) else {
                 continue;
             };
-            write_response(&mut writer, message.framing, &response)?;
+            if let Err(err) = write_response(&mut writer, message.framing, &response) {
+                self.diagnostics
+                    .error(format!("failed to write MCP response: {err}"));
+                return Err(err);
+            }
         }
 
         Ok(())
@@ -145,7 +233,10 @@ impl McpServer {
                         paths.extend(event.paths);
                     }
                 }
-                Ok(Err(err)) => eprintln!("Watch error: {err}"),
+                Ok(Err(err)) => {
+                    eprintln!("Watch error: {err}");
+                    self.diagnostics.warn(format!("watch error: {err}"));
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
@@ -155,15 +246,32 @@ impl McpServer {
             return Ok(());
         }
 
-        let summary = freshness::refresh_paths(&mut self.engine, &self.root, paths)?;
+        let summary = match freshness::refresh_paths(&mut self.engine, &self.root, paths) {
+            Ok(summary) => summary,
+            Err(err) => {
+                self.diagnostics.error(format!(
+                    "failed to refresh changed paths for {}: {err}",
+                    self.root.display()
+                ));
+                return Err(err);
+            }
+        };
         if summary.changed() {
             if self.persist_graph {
-                snapshot::write_snapshot(&self.engine, &self.graph_path)?;
+                if let Err(err) = snapshot::write_snapshot(&self.engine, &self.graph_path) {
+                    self.diagnostics.error(format!(
+                        "failed to save MCP graph {}: {err}",
+                        self.graph_path.display()
+                    ));
+                    return Err(err);
+                }
             }
-            eprintln!(
+            let message = format!(
                 "MCP graph refreshed: {} indexed, {} removed",
                 summary.indexed, summary.removed
             );
+            eprintln!("{message}");
+            self.diagnostics.info(message);
         }
 
         Ok(())
@@ -1417,6 +1525,13 @@ fn render_search_results(query: &str, results: &[crate::types::SearchResult]) ->
     out
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1429,6 +1544,7 @@ mod tests {
             root.path().join(".lexa/graph.lexa"),
             false,
             false,
+            Diagnostics::disabled(),
         )
     }
 
@@ -1448,6 +1564,7 @@ mod tests {
             root.path().join(".lexa/graph.lexa"),
             false,
             false,
+            Diagnostics::disabled(),
         )
     }
 
@@ -1502,6 +1619,47 @@ mod tests {
         let mut reader = Cursor::new(vec![0xff, b'\n']);
 
         assert!(read_message(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn diagnostics_create_plain_text_log_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("lexa-mcp.log");
+
+        let mut diagnostics = Diagnostics::append_to_path(&path).unwrap();
+        diagnostics.info("starting MCP server");
+        drop(diagnostics);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains(" INFO starting MCP server\n"));
+    }
+
+    #[test]
+    fn diagnostics_append_to_existing_log_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("lexa-mcp.log");
+        std::fs::write(&path, "existing\n").unwrap();
+
+        let mut diagnostics = Diagnostics::append_to_path(&path).unwrap();
+        diagnostics.warn("watch error");
+        drop(diagnostics);
+
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.starts_with("existing\n"));
+        assert!(content.contains(" WARN watch error\n"));
+    }
+
+    #[test]
+    fn diagnostics_report_invalid_log_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("missing").join("lexa-mcp.log");
+
+        let err = match Diagnostics::append_to_path(&path) {
+            Ok(_) => panic!("expected invalid log path error"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("failed to open MCP log file"));
     }
 
     #[test]
@@ -1835,6 +1993,7 @@ mod tests {
             root.path().join(".lexa/graph.lexa"),
             false,
             false,
+            Diagnostics::disabled(),
         );
 
         let output = server
@@ -1856,6 +2015,7 @@ mod tests {
             root.path().join(".lexa/graph.lexa"),
             false,
             false,
+            Diagnostics::disabled(),
         );
 
         let err = match server.tool_pipeline(&json!({"query": "search AgentRunRequest | limit 1"}))
