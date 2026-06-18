@@ -235,4 +235,20 @@ mod tests {
         assert_eq!(summary.indexed, 0);
         assert_eq!(summary.removed, 0);
     }
+
+    #[test]
+    fn refresh_paths_ignores_hidden_internal_paths() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".lexa")).unwrap();
+        let log_path = root.join(".lexa/mcp.log");
+        std::fs::write(&log_path, "diagnostic line\n").unwrap();
+
+        let mut engine = Engine::new(16);
+        let summary = refresh_paths(&mut engine, root, vec![log_path]).unwrap();
+
+        assert_eq!(summary.indexed, 0);
+        assert_eq!(summary.removed, 0);
+        assert!(engine.file_map().is_empty());
+    }
 }
