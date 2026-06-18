@@ -128,21 +128,17 @@ pub fn relative_path(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<S
 }
 
 fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
-    if should_skip_path(path) {
-        return None;
-    }
-
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
         if SKIP_FILES.contains(&name) {
             return None;
         }
     }
 
-    let relative = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .to_string();
+    let relative_path = path.strip_prefix(root).unwrap_or(path);
+    if should_skip_path(relative_path) {
+        return None;
+    }
+    let relative = relative_path.to_string_lossy().to_string();
 
     let language = detect_language(&relative);
     let mut indexable = true;
@@ -182,12 +178,19 @@ fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
 fn should_skip_path(path: &Path) -> bool {
     for component in path.components() {
         if let Some(name) = component.as_os_str().to_str() {
+            if is_hidden_component(name) {
+                return true;
+            }
             if SKIP_DIRS.contains(&name) {
                 return true;
             }
         }
     }
     false
+}
+
+fn is_hidden_component(name: &str) -> bool {
+    name.starts_with('.') && name != "." && name != ".."
 }
 
 fn is_binary_extension(ext: &str) -> bool {
