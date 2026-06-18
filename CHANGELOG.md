@@ -4,6 +4,12 @@
 
 No changes yet.
 
+## v0.6.6 - 2026-06-18
+
+### Fixed
+
+- Ignored hidden project paths during MCP watcher refreshes so `.lexa/mcp.log` and other internal files do not trigger repeated graph updates.
+
 ## v0.6.5 - 2026-06-17
 
 ### Added
