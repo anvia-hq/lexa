@@ -489,23 +489,32 @@ fn main() -> Result<()> {
     }
 }
 
-fn graph_path(cli: &Cli) -> PathBuf {
-    cli.graph
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_GRAPH_PATH))
+fn current_root() -> Result<PathBuf> {
+    std::fs::canonicalize(std::env::current_dir()?)
+        .context("failed to canonicalize current directory")
 }
 
-fn project_graph_path(root: &std::path::Path, cli: &Cli) -> PathBuf {
+fn graph_path_for_root(root: &std::path::Path, cli: &Cli) -> PathBuf {
     cli.graph
         .clone()
         .unwrap_or_else(|| root.join(DEFAULT_GRAPH_PATH))
 }
 
+fn graph_path(cli: &Cli) -> Result<PathBuf> {
+    let root = current_root()?;
+    Ok(graph_path_for_root(&root, cli))
+}
+
 fn load_engine(cli: &Cli) -> Result<engine::Engine> {
+    let root = current_root()?;
+    load_engine_for_root(&root, cli)
+}
+
+fn load_engine_for_root(root: &std::path::Path, cli: &Cli) -> Result<engine::Engine> {
     let mut engine = engine::Engine::new(16384);
 
     if !cli.no_graph {
-        let path = graph_path(cli);
+        let path = graph_path_for_root(root, cli);
         if path.exists() {
             match snapshot::load_snapshot_into_engine(&mut engine, &path) {
                 Ok(count) => {
@@ -529,12 +538,34 @@ fn load_engine(cli: &Cli) -> Result<engine::Engine> {
     Ok(engine)
 }
 
+fn load_existing_engine_for_root(
+    root: &std::path::Path,
+    cli: &Cli,
+) -> Result<(engine::Engine, PathBuf)> {
+    let snap_path = graph_path_for_root(root, cli);
+    if !snap_path.exists() {
+        bail!(
+            "no graph file found at {}. Run 'lexa index .' first.",
+            snap_path.display()
+        );
+    }
+
+    let mut engine = engine::Engine::new(16384);
+    snapshot::load_snapshot_into_engine(&mut engine, &snap_path).with_context(|| {
+        format!(
+            "failed to load graph {}. Run 'lexa reindex .' to rebuild it or 'lexa clear-index' to remove it.",
+            snap_path.display()
+        )
+    })?;
+    Ok((engine, snap_path))
+}
+
 fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> {
     let root = std::fs::canonicalize(root)?;
     let snap_path = if let Some(out) = output {
         out.clone()
     } else {
-        graph_path(cli)
+        graph_path_for_root(&root, cli)
     };
 
     if !cli.json {
@@ -545,14 +576,17 @@ fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> 
     let count = engine.index_project(&root);
 
     if cli.json {
-        snapshot::write_snapshot(&engine, &snap_path)?;
+        if !cli.no_graph {
+            snapshot::write_snapshot(&engine, &snap_path)?;
+        }
         return print_json(json!({
             "root": root.display().to_string(),
             "files_indexed": count,
             "symbols_indexed": engine.symbol_index_count(),
             "unique_words_indexed": engine.word_index_count(),
             "word_indexed_files": engine.word_index_file_count(),
-            "graph": snap_path.display().to_string(),
+            "graph": (!cli.no_graph).then(|| snap_path.display().to_string()),
+            "persisted": !cli.no_graph,
         }));
     }
 
@@ -561,8 +595,12 @@ fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> 
     println!("  Unique words: {}", engine.word_index_count());
     println!("  Word-indexed files: {}", engine.word_index_file_count());
 
-    snapshot::write_snapshot(&engine, &snap_path)?;
-    println!("Graph saved to {}", snap_path.display());
+    if !cli.no_graph {
+        snapshot::write_snapshot(&engine, &snap_path)?;
+        println!("Graph saved to {}", snap_path.display());
+    } else {
+        println!("Graph not saved (--no-graph)");
+    }
 
     Ok(())
 }
@@ -588,7 +626,7 @@ fn cmd_reindex(root: &PathBuf, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_clear_index(cli: &Cli) -> Result<()> {
-    let snap_path = graph_path(cli);
+    let snap_path = graph_path(cli)?;
     let existed = snap_path.exists();
     if existed {
         std::fs::remove_file(&snap_path)
@@ -638,7 +676,7 @@ fn cmd_mcp(
             return Err(err.into());
         }
     };
-    let snap_path = project_graph_path(&root, cli);
+    let snap_path = graph_path_for_root(&root, cli);
     let mut engine = engine::Engine::new(16384);
     let include_structured_content = structured_content || cli.json;
     diagnostics.info(format!(
@@ -1316,7 +1354,7 @@ fn cmd_edit(
     dry_run: bool,
     cli: &Cli,
 ) -> Result<()> {
-    let root = std::env::current_dir()?;
+    let root = current_root()?;
     let rel_path = normalize_project_path(&root, path, PathMode::Existing)?;
     let abs_path = project_target_path(&root, &rel_path);
     let (range_start, range_end) = if let Some(range) = line_range {
@@ -1329,6 +1367,12 @@ fn cmd_edit(
         Some(std::fs::read_to_string(path)?)
     } else {
         content.map(ToString::to_string)
+    };
+
+    let mut loaded_engine = if !dry_run && !cli.no_graph {
+        Some(load_existing_engine_for_root(&root, cli)?)
+    } else {
+        None
     };
 
     let request = edit::EditRequest {
@@ -1364,10 +1408,18 @@ fn cmd_edit(
     }
 
     if result.changed {
-        let mut engine = load_engine(cli)?;
+        let (mut engine, snap_path) = if let Some((engine, snap_path)) = loaded_engine.take() {
+            (engine, snap_path)
+        } else {
+            (
+                load_engine_for_root(&root, cli)?,
+                graph_path_for_root(&root, cli),
+            )
+        };
         engine.index_edited_file(&rel_path, &result.new_content, store_op(op));
-        let snap_path = graph_path(cli);
-        snapshot::write_snapshot(&engine, &snap_path)?;
+        if !cli.no_graph {
+            snapshot::write_snapshot(&engine, &snap_path)?;
+        }
         if cli.json {
             return print_json(json!({
                 "path": rel_path,
@@ -1376,7 +1428,8 @@ fn cmd_edit(
                 "changed": true,
                 "hash": format!("{:x}", result.new_hash),
                 "line_count": result.line_count,
-                "graph": snap_path.display().to_string(),
+                "graph": (!cli.no_graph).then(|| snap_path.display().to_string()),
+                "persisted": !cli.no_graph,
                 "change_sequence": engine.store().current_seq(),
             }));
         }
@@ -1384,7 +1437,9 @@ fn cmd_edit(
             "edit applied: {} lines, hash:{:x}",
             result.line_count, result.new_hash
         );
-        println!("Graph saved to {}", snap_path.display());
+        if !cli.no_graph {
+            println!("Graph saved to {}", snap_path.display());
+        }
     } else {
         if cli.json {
             return print_json(json!({
@@ -1410,13 +1465,19 @@ fn cmd_create(
     dry_run: bool,
     cli: &Cli,
 ) -> Result<()> {
-    let root = std::env::current_dir()?;
+    let root = current_root()?;
     let rel_path = normalize_project_path(&root, path, PathMode::Create)?;
     let abs_path = project_target_path(&root, &rel_path);
     let content = if let Some(path) = content_file {
         std::fs::read_to_string(path)?
     } else {
         content.unwrap_or("").to_string()
+    };
+
+    let mut loaded_engine = if !dry_run && !cli.no_graph {
+        Some(load_existing_engine_for_root(&root, cli)?)
+    } else {
+        None
     };
 
     let request = edit::CreateRequest {
@@ -1428,10 +1489,18 @@ fn cmd_create(
     let result = edit::create_file(&request)?;
 
     if !dry_run {
-        let mut engine = load_engine(cli)?;
+        let (mut engine, snap_path) = if let Some((engine, snap_path)) = loaded_engine.take() {
+            (engine, snap_path)
+        } else {
+            (
+                load_engine_for_root(&root, cli)?,
+                graph_path_for_root(&root, cli),
+            )
+        };
         engine.index_edited_file(&rel_path, &content, store::Op::Create);
-        let snap_path = graph_path(cli);
-        snapshot::write_snapshot(&engine, &snap_path)?;
+        if !cli.no_graph {
+            snapshot::write_snapshot(&engine, &snap_path)?;
+        }
     }
 
     if cli.json {
@@ -1543,7 +1612,7 @@ fn cmd_ls(path: &str, cli: &Cli) -> Result<()> {
 
 fn cmd_status(cli: &Cli) -> Result<()> {
     let engine = load_engine(cli)?;
-    let snap_path = graph_path(cli);
+    let snap_path = graph_path(cli)?;
     let graph = if snap_path.exists() {
         let metadata = std::fs::metadata(&snap_path)?;
         json!({
@@ -1603,6 +1672,9 @@ fn cmd_audit(
     cli: &Cli,
 ) -> Result<()> {
     let engine = load_engine(cli)?;
+    if engine.file_count() == 0 {
+        bail!("no files indexed; run 'lexa index .' before running audit");
+    }
     let root = std::env::current_dir()?;
     let config = audit::load_audit_config(&root, config_path.map(PathBuf::as_path), no_config)?;
     let scope = if let Some(base) = since {
@@ -1667,12 +1739,23 @@ fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
     watcher.watch(&watch_path, RecursiveMode::Recursive)?;
 
     let mut engine = engine::Engine::new(16384);
+    let snap_path = graph_path_for_root(&watch_path, cli);
     if !cli.no_graph {
-        let snap_path = graph_path(cli);
         if snap_path.exists() {
-            if let Ok(count) = snapshot::load_snapshot_into_engine(&mut engine, &snap_path) {
-                eprintln!("Loaded {} files from graph", count);
+            match snapshot::load_snapshot_into_engine(&mut engine, &snap_path) {
+                Ok(count) => eprintln!("Loaded {} files from graph", count),
+                Err(err) => bail!(
+                    "failed to load graph {}: {err}. Run 'lexa reindex {}' to rebuild it or 'lexa clear-index' to remove it.",
+                    snap_path.display(),
+                    watch_path.display()
+                ),
             }
+        } else {
+            bail!(
+                "no graph file found at {}. Run 'lexa index {}' first.",
+                snap_path.display(),
+                watch_path.display()
+            );
         }
     }
 
@@ -1706,9 +1789,10 @@ fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
                         }
                     }
 
-                    let snap_path = graph_path(cli);
-                    if let Err(e) = snapshot::write_snapshot(&engine, &snap_path) {
-                        eprintln!("Warning: Failed to save graph: {}", e);
+                    if !cli.no_graph {
+                        if let Err(e) = snapshot::write_snapshot(&engine, &snap_path) {
+                            eprintln!("Warning: Failed to save graph: {}", e);
+                        }
                     }
                 }
             }
