@@ -4,6 +4,16 @@
 
 No changes yet.
 
+## v0.6.7 - 2026-06-21
+
+### Fixed
+
+- Resolved default graph paths relative to the project root so `lexa index /path/to/project` writes the graph under that project by default.
+- Prevented `--no-graph` edit, create, index, and watch flows from persisting snapshots.
+- Made persisted `patch` and `create` fail before mutating files when no graph exists, avoiding accidental one-file snapshots.
+- Made `audit` fail on empty indexes instead of reporting a clean result.
+- Made `watch` fail startup when an existing graph cannot be loaded.
+
 ## v0.6.6 - 2026-06-18
 
 ### Fixed
