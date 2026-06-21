@@ -1742,8 +1742,13 @@ fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
     let snap_path = graph_path_for_root(&watch_path, cli);
     if !cli.no_graph {
         if snap_path.exists() {
-            if let Ok(count) = snapshot::load_snapshot_into_engine(&mut engine, &snap_path) {
-                eprintln!("Loaded {} files from graph", count);
+            match snapshot::load_snapshot_into_engine(&mut engine, &snap_path) {
+                Ok(count) => eprintln!("Loaded {} files from graph", count),
+                Err(err) => bail!(
+                    "failed to load graph {}: {err}. Run 'lexa reindex {}' to rebuild it or 'lexa clear-index' to remove it.",
+                    snap_path.display(),
+                    watch_path.display()
+                ),
             }
         } else {
             bail!(
