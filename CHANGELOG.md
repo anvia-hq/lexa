@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 - 2026-06-22
 
-No changes yet.
+### Changed
+
+- Rewrote all 22 MCP tool descriptions in `src/mcp.rs::tools()` from terse one-liners into 2-3 sentence guidance covering when to use each tool, what it returns, and key arguments, helping agents pick the right tool more reliably.
+- Synced the same descriptions verbatim into the MCP tools table in `skill/SKILL.md` (also added the previously missing `symbol_search`, `reindex`, and `clear_index` rows and reordered rows to match `src/mcp.rs`).
 
 ## v0.6.7 - 2026-06-21
 
