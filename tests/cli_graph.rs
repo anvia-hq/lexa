@@ -339,6 +339,42 @@ fn cli_patch_compact_preview_and_success_output_are_focused() {
 }
 
 #[test]
+fn cli_patch_reports_content_change_when_line_counts_do_not_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path();
+    let path = project.join("a.rs");
+    std::fs::write(&path, "one\ntwo").unwrap();
+
+    assert!(lexa()
+        .current_dir(project)
+        .arg("index")
+        .arg(".")
+        .output()
+        .unwrap()
+        .status
+        .success());
+
+    let changed = lexa()
+        .current_dir(project)
+        .args([
+            "patch",
+            "a.rs",
+            "insert",
+            "--after",
+            "99",
+            "--content",
+            "\n",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(changed.status.success());
+    assert!(String::from_utf8_lossy(&changed.stdout)
+        .contains("content changed without line-count change (2 total)"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+}
+
+#[test]
 fn cli_patch_supports_replace_text_and_anchor_modes() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path();

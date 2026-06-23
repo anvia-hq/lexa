@@ -48,7 +48,7 @@ lexa patch src/main.rs --anchor 'const uploadMutation' --placement after --conte
 | `--replace-text <text>` | Replace one unique exact text match. |
 | `--anchor <text>` + `--placement before|after` | Insert content around one unique exact anchor. |
 | `--content <string>` | Inline replacement content. |
-| `--content-file <path>` | Read replacement content from a file. |
+| `--content-file <path>` | Read replacement content from a file. Prefer this for large Markdown, full-block replacements, or content with shell metacharacters. |
 | `--if-hash <HEX>` | Refuse the edit if the on-disk hash doesn't match. |
 | `--dry-run` | Preview the diff without writing. |
 | `--preview compact|full` | Choose compact local hunks (default) or full line-index preview. |
@@ -56,6 +56,10 @@ lexa patch src/main.rs --anchor 'const uploadMutation' --placement after --conte
 The three line operations are `replace`, `insert`, and `delete`. Text and
 anchor modes require an exact unique match. See [Safe-Edit Semantics](/docs/safe-edit)
 for the model.
+
+For large replacements, write the new body to a temporary file and pass
+`--content-file`; this avoids brittle shell quoting for Markdown, code fences,
+backticks, and multi-line content.
 
 When a graph is loaded, CLI commands refresh changed, added, and removed files
 before reading or searching. If anything changed, Lexa prints

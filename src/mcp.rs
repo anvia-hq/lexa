@@ -901,10 +901,7 @@ impl McpServer {
             }
             let hash = format!("{:x}", result.new_hash);
             Ok(ToolOutput::new(
-                format!(
-                    "patch applied to {rel_path}: +{} -{} lines ({} total), hash:{hash}",
-                    result.lines_added, result.lines_removed, result.line_count
-                ),
+                format_patch_applied(&rel_path, &result, &hash),
                 json!({
                     "path": rel_path,
                     "op": op_label,
@@ -1558,6 +1555,20 @@ fn store_op(op: EditOp) -> store::Op {
         EditOp::Insert => store::Op::Insert,
         EditOp::Delete => store::Op::Delete,
     }
+}
+
+fn format_patch_applied(path: &str, result: &edit::EditResult, hash: &str) -> String {
+    if result.lines_added == 0 && result.lines_removed == 0 {
+        return format!(
+            "patch applied to {path}: content changed without line-count change ({} total), hash:{hash}",
+            result.line_count
+        );
+    }
+
+    format!(
+        "patch applied to {path}: +{} -{} lines ({} total), hash:{hash}",
+        result.lines_added, result.lines_removed, result.line_count
+    )
 }
 
 fn effective_edit_op(

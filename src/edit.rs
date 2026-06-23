@@ -261,7 +261,9 @@ fn insert_at_anchor(
 fn unique_match(haystack: &str, needle: &str, flag: &str) -> Result<(usize, usize)> {
     let mut matches = haystack.match_indices(needle);
     let Some((start, _)) = matches.next() else {
-        bail!("{flag} did not match the file content");
+        bail!(
+            "{flag} did not match the file content. If the text contains shell metacharacters, wrap it in single quotes."
+        );
     };
     if matches.next().is_some() {
         bail!("{flag} matched multiple locations; provide a unique exact text");
@@ -660,6 +662,7 @@ mod tests {
         let mut missing = req;
         missing.replace_text = Some("absent".to_string());
         assert!(edit_err(&missing).contains("did not match"));
+        assert!(edit_err(&missing).contains("single quotes"));
 
         std::fs::write(&path, "same\nsame\n").unwrap();
         let mut ambiguous = request(path, EditOp::Replace);

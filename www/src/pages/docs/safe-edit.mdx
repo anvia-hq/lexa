@@ -29,6 +29,11 @@ lexa patch src/main.rs --anchor 'const uploadMutation' --placement after --conte
 `--replace-text` and `--anchor` must each match exactly one location. Lexa
 fails instead of guessing when the text is missing or ambiguous.
 
+If exact text or replacement content contains shell metacharacters such as
+backticks, prefer single quotes around exact text and `--content-file` for the
+replacement body. For large Markdown or full-block replacements,
+`--content-file` is usually safer than inline `--content`.
+
 Atomic file writes go through a temp file + rename (`src/edit.rs`) so a
 failed edit never leaves the project in a half-written state.
 
