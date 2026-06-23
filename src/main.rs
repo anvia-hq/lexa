@@ -1627,8 +1627,8 @@ fn cmd_edit(
             }));
         }
         println!(
-            "edit applied to {}: +{} -{} lines ({} total), hash:{:x}",
-            rel_path, result.lines_added, result.lines_removed, result.line_count, result.new_hash
+            "{}",
+            format_edit_applied(&rel_path, &result, result.new_hash)
         );
         if !cli.no_graph {
             println!("Graph saved to {}", snap_path.display());
@@ -1729,6 +1729,20 @@ fn store_op(op: edit::EditOp) -> store::Op {
         edit::EditOp::Insert => store::Op::Insert,
         edit::EditOp::Delete => store::Op::Delete,
     }
+}
+
+fn format_edit_applied(path: &str, result: &edit::EditResult, hash: u64) -> String {
+    if result.lines_added == 0 && result.lines_removed == 0 {
+        return format!(
+            "edit applied to {path}: content changed without line-count change ({} total), hash:{hash:x}",
+            result.line_count
+        );
+    }
+
+    format!(
+        "edit applied to {path}: +{} -{} lines ({} total), hash:{hash:x}",
+        result.lines_added, result.lines_removed, result.line_count
+    )
 }
 
 fn effective_edit_op(

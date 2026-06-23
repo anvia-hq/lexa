@@ -165,6 +165,10 @@ lexa patch <path> --anchor '<unique exact anchor>' --placement after --content '
 lexa create <path> --content '<new file content>'
 ```
 
+For large replacements, Markdown, code fences, or content with shell
+metacharacters, write the new content to a temp file and use
+`--content-file <path>` instead of inline `--content`.
+
 For safety, pair edits with `--if-hash` when another process or user may have changed the file:
 
 ```bash
