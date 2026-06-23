@@ -6,7 +6,7 @@ use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
 use lexa::{audit, edit, freshness, mcp, pipeline, snapshot, store};
 use serde_json::json;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DEFAULT_GRAPH_PATH: &str = ".lexa/graph.lexa";
 
@@ -86,18 +86,33 @@ enum Commands {
 
     #[command(name = "path-search")]
     PathSearch {
-        pattern: String,
+        pattern: Option<String>,
 
-        #[arg(short, long, default_value = "20")]
-        max: usize,
+        #[arg(long)]
+        query: Option<String>,
+
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        max_results: Option<usize>,
     },
 
-    #[command(name = "text-search")]
+    #[command(
+        name = "text-search",
+        after_help = "Examples:\n  lexa text-search \"uploadMutation\" --max 20\n  lexa text-search --query \"uploadMutation\" --max-results 20\n  lexa text-search \"useMutation\" --path-glob \"**/*.{ts,tsx}\""
+    )]
     TextSearch {
-        query: String,
+        query: Option<String>,
 
-        #[arg(short, long, default_value = "20")]
-        max: usize,
+        #[arg(long = "query", value_name = "QUERY")]
+        query_flag: Option<String>,
+
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        max_results: Option<usize>,
 
         #[arg(short, long)]
         regex: bool,
@@ -126,10 +141,16 @@ enum Commands {
 
     #[command(name = "symbol-search")]
     SymbolSearch {
-        query: String,
+        query: Option<String>,
 
-        #[arg(short, long, default_value = "20")]
-        max: usize,
+        #[arg(long = "query", value_name = "QUERY")]
+        query_flag: Option<String>,
+
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        max_results: Option<usize>,
     },
 
     #[command(name = "word-refs")]
@@ -154,17 +175,29 @@ enum Commands {
     },
 
     Callers {
-        name: String,
+        name: Option<String>,
 
-        #[arg(short, long, default_value = "20")]
-        max: usize,
+        #[arg(long)]
+        query: Option<String>,
+
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        max_results: Option<usize>,
     },
 
     Brief {
-        task: String,
+        task: Option<String>,
 
-        #[arg(short, long, default_value = "10")]
-        max: usize,
+        #[arg(long)]
+        query: Option<String>,
+
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        max_results: Option<usize>,
 
         #[arg(long)]
         path_prefix: Option<String>,
@@ -181,11 +214,20 @@ enum Commands {
         since: u64,
     },
 
+    #[command(
+        after_help = "Examples:\n  lexa read src/main.rs -L 20-80 --hash\n  lexa read src/main.rs --line-start 20 --line-end 80\n  lexa read src/main.rs --if-hash <hash>"
+    )]
     Read {
         path: String,
 
         #[arg(short = 'L', long)]
         line_range: Option<String>,
+
+        #[arg(long)]
+        line_start: Option<u32>,
+
+        #[arg(long)]
+        line_end: Option<u32>,
 
         #[arg(short, long)]
         compact: bool,
@@ -197,17 +239,32 @@ enum Commands {
         hash: bool,
     },
 
+    #[command(
+        after_help = "Examples:\n  lexa patch src/main.rs replace -L 12 --content '    println!(\"updated\");'\n  lexa patch src/main.rs insert --after 20 --content '// new comment' --preview compact --dry-run\n  lexa patch src/main.rs --replace-text 'old block' --content 'new block'\n  lexa patch src/main.rs --anchor 'const uploadMutation' --placement after --content 'const helper = ...;'"
+    )]
     Patch {
         path: String,
 
         #[arg(value_enum)]
-        op: edit::EditOp,
+        op: Option<edit::EditOp>,
 
         #[arg(short = 'L', long)]
         line_range: Option<String>,
 
         #[arg(long)]
         after: Option<u32>,
+
+        #[arg(long)]
+        replace_text: Option<String>,
+
+        #[arg(long)]
+        anchor: Option<String>,
+
+        #[arg(long, value_enum)]
+        placement: Option<edit::AnchorPlacement>,
+
+        #[arg(long, value_enum, default_value = "compact")]
+        preview: edit::PreviewMode,
 
         #[arg(long)]
         content: Option<String>,
@@ -351,19 +408,35 @@ fn main() -> Result<()> {
             &cli,
         ),
         Commands::List { path } => cmd_ls(path, &cli),
-        Commands::PathSearch { pattern, max } => cmd_find(pattern, *max, &cli),
-        Commands::TextSearch {
+        Commands::PathSearch {
+            pattern,
             query,
             max,
+            max_results,
+        } => cmd_find(
+            &required_text(pattern.as_deref(), query.as_deref(), "path-search", "query")?,
+            max_limit(*max, *max_results, 20)?,
+            &cli,
+        ),
+        Commands::TextSearch {
+            query,
+            query_flag,
+            max,
+            max_results,
             regex,
             scope,
             compact,
             paths_only,
             path_glob,
         } => cmd_search(
-            query,
+            &required_text(
+                query.as_deref(),
+                query_flag.as_deref(),
+                "text-search",
+                "query",
+            )?,
             SearchOptions {
-                max_results: *max,
+                max_results: max_limit(*max, *max_results, 20)?,
                 regex: *regex,
                 scope: *scope,
                 compact: *compact,
@@ -374,7 +447,21 @@ fn main() -> Result<()> {
         ),
         Commands::Outline { path } => cmd_outline(path, &cli),
         Commands::SymbolDefs { name } => cmd_symbol(name, &cli),
-        Commands::SymbolSearch { query, max } => cmd_symbol_search(query, *max, &cli),
+        Commands::SymbolSearch {
+            query,
+            query_flag,
+            max,
+            max_results,
+        } => cmd_symbol_search(
+            &required_text(
+                query.as_deref(),
+                query_flag.as_deref(),
+                "symbol-search",
+                "query",
+            )?,
+            max_limit(*max, *max_results, 20)?,
+            &cli,
+        ),
         Commands::WordRefs { word } => cmd_word(word, &cli),
         Commands::Deps {
             path,
@@ -382,17 +469,28 @@ fn main() -> Result<()> {
             transitive,
         } => cmd_deps(path, *reverse, *transitive, &cli),
         Commands::Recent { limit } => cmd_hot(*limit, &cli),
-        Commands::Callers { name, max } => cmd_callers(name, *max, &cli),
+        Commands::Callers {
+            name,
+            query,
+            max,
+            max_results,
+        } => cmd_callers(
+            &required_text(name.as_deref(), query.as_deref(), "callers", "name")?,
+            max_limit(*max, *max_results, 20)?,
+            &cli,
+        ),
         Commands::Brief {
             task,
+            query,
             max,
+            max_results,
             path_prefix,
             path_glob,
             language,
         } => cmd_context(
-            task,
+            &required_text(task.as_deref(), query.as_deref(), "brief", "task")?,
             ContextOptions {
-                max_results: *max,
+                max_results: max_limit(*max, *max_results, 10)?,
                 path_prefix: path_prefix.clone(),
                 path_glob: path_glob.clone(),
                 language: language.clone(),
@@ -403,22 +501,33 @@ fn main() -> Result<()> {
         Commands::Read {
             path,
             line_range,
+            line_start,
+            line_end,
             compact,
             if_hash,
             hash,
-        } => cmd_read(
-            path,
-            line_range.as_deref(),
-            *compact,
-            if_hash.as_deref(),
-            *hash,
-            &cli,
-        ),
+        } => {
+            let (line_start, line_end) =
+                resolve_line_range(line_range.as_deref(), *line_start, *line_end)?;
+            cmd_read(
+                path,
+                line_start,
+                line_end,
+                *compact,
+                if_hash.as_deref(),
+                *hash,
+                &cli,
+            )
+        }
         Commands::Patch {
             path,
             op,
             line_range,
             after,
+            replace_text,
+            anchor,
+            placement,
+            preview,
             content,
             content_file,
             if_hash,
@@ -428,6 +537,10 @@ fn main() -> Result<()> {
             *op,
             line_range.as_deref(),
             *after,
+            replace_text.as_deref(),
+            anchor.as_deref(),
+            *placement,
+            *preview,
             content.as_deref(),
             content_file.as_ref(),
             if_hash.as_deref(),
@@ -505,20 +618,29 @@ fn graph_path(cli: &Cli) -> Result<PathBuf> {
     Ok(graph_path_for_root(&root, cli))
 }
 
-fn load_engine(cli: &Cli) -> Result<engine::Engine> {
-    let root = current_root()?;
-    load_engine_for_root(&root, cli)
+struct LoadedEngine {
+    engine: engine::Engine,
+    graph_path: PathBuf,
+    refresh: freshness::RefreshSummary,
 }
 
-fn load_engine_for_root(root: &std::path::Path, cli: &Cli) -> Result<engine::Engine> {
+fn load_engine(cli: &Cli) -> Result<engine::Engine> {
+    let root = current_root()?;
+    Ok(load_engine_for_root(&root, cli)?.engine)
+}
+
+fn load_engine_for_root(root: &Path, cli: &Cli) -> Result<LoadedEngine> {
     let mut engine = engine::Engine::new(16384);
+    let path = graph_path_for_root(root, cli);
+    let mut loaded_graph = false;
+    let mut refresh = freshness::RefreshSummary::default();
 
     if !cli.no_graph {
-        let path = graph_path_for_root(root, cli);
         if path.exists() {
             match snapshot::load_snapshot_into_engine(&mut engine, &path) {
                 Ok(count) => {
                     eprintln!("Loaded {} files from graph", count);
+                    loaded_graph = true;
                 }
                 Err(e) => {
                     bail!(
@@ -535,13 +657,18 @@ fn load_engine_for_root(root: &std::path::Path, cli: &Cli) -> Result<engine::Eng
         }
     }
 
-    Ok(engine)
+    if loaded_graph {
+        refresh = refresh_loaded_graph(&mut engine, root, &path, !cli.no_graph)?;
+    }
+
+    Ok(LoadedEngine {
+        engine,
+        graph_path: path,
+        refresh,
+    })
 }
 
-fn load_existing_engine_for_root(
-    root: &std::path::Path,
-    cli: &Cli,
-) -> Result<(engine::Engine, PathBuf)> {
+fn load_existing_engine_for_root(root: &Path, cli: &Cli) -> Result<(engine::Engine, PathBuf)> {
     let snap_path = graph_path_for_root(root, cli);
     if !snap_path.exists() {
         bail!(
@@ -557,7 +684,65 @@ fn load_existing_engine_for_root(
             snap_path.display()
         )
     })?;
+    refresh_loaded_graph(&mut engine, root, &snap_path, true)?;
     Ok((engine, snap_path))
+}
+
+fn refresh_loaded_graph(
+    engine: &mut engine::Engine,
+    root: &Path,
+    snap_path: &Path,
+    persist_graph: bool,
+) -> Result<freshness::RefreshSummary> {
+    let refresh = freshness::refresh_project(engine, root)
+        .with_context(|| format!("failed to refresh graph for {}", root.display()))?;
+    if refresh.changed() {
+        eprintln!(
+            "Refreshed graph: {} indexed, {} removed",
+            refresh.indexed, refresh.removed
+        );
+        if persist_graph {
+            snapshot::write_snapshot(engine, snap_path)?;
+        }
+    }
+    Ok(refresh)
+}
+
+fn required_text(
+    positional: Option<&str>,
+    flag: Option<&str>,
+    command: &str,
+    label: &str,
+) -> Result<String> {
+    match (positional, flag) {
+        (Some(_), Some(_)) => {
+            bail!("{command} accepts either positional {label} or --query, not both")
+        }
+        (Some(value), None) | (None, Some(value)) => Ok(value.to_string()),
+        (None, None) => bail!("{command} requires {label}. Example: lexa {command} <{label}>"),
+    }
+}
+
+fn max_limit(max: Option<usize>, max_results: Option<usize>, default: usize) -> Result<usize> {
+    match (max, max_results) {
+        (Some(_), Some(_)) => bail!("use either --max or --max-results, not both"),
+        (Some(value), None) | (None, Some(value)) => Ok(value),
+        (None, None) => Ok(default),
+    }
+}
+
+fn resolve_line_range(
+    line_range: Option<&str>,
+    line_start: Option<u32>,
+    line_end: Option<u32>,
+) -> Result<(Option<u32>, Option<u32>)> {
+    if line_range.is_some() && (line_start.is_some() || line_end.is_some()) {
+        bail!("use either --line-range or --line-start/--line-end, not both");
+    }
+    if let Some(range) = line_range {
+        return parse_line_range(range);
+    }
+    Ok((line_start, line_end))
 }
 
 fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> {
@@ -1290,24 +1475,19 @@ fn cmd_changes(since: u64, cli: &Cli) -> Result<()> {
 
 fn cmd_read(
     path: &str,
-    line_range: Option<&str>,
+    line_start: Option<u32>,
+    line_end: Option<u32>,
     compact: bool,
     if_hash: Option<&str>,
     show_hash: bool,
     cli: &Cli,
 ) -> Result<()> {
     let engine = load_engine(cli)?;
-    if engine.file_count() == 0 {
-        bail!("no files indexed; run 'lexa index .' before running audit");
-    }
     let root = std::env::current_dir()?;
-    let path = normalize_project_path(&root, path, PathMode::Existing)?;
-
-    let (line_start, line_end) = if let Some(range) = line_range {
-        parse_line_range(range)?
-    } else {
-        (None, None)
-    };
+    let path = normalize_project_path(&root, path, PathMode::Create)?;
+    if engine.file_count() == 0 && project_target_path(&root, &path).exists() {
+        bail!("no files indexed; run 'lexa index .' before reading files");
+    }
 
     match engine.read_file_rich(&path, line_start, line_end, compact, if_hash) {
         Some(result) => {
@@ -1345,9 +1525,13 @@ fn cmd_read(
 #[allow(clippy::too_many_arguments)]
 fn cmd_edit(
     path: &str,
-    op: edit::EditOp,
+    op: Option<edit::EditOp>,
     line_range: Option<&str>,
     after: Option<u32>,
+    replace_text: Option<&str>,
+    anchor: Option<&str>,
+    placement: Option<edit::AnchorPlacement>,
+    preview_mode: edit::PreviewMode,
     content: Option<&str>,
     content_file: Option<&PathBuf>,
     if_hash: Option<&str>,
@@ -1382,22 +1566,31 @@ fn cmd_edit(
         range_end,
         after,
         content: edit_content,
+        replace_text: replace_text.map(ToString::to_string),
+        anchor: anchor.map(ToString::to_string),
+        placement,
+        preview_mode,
         if_hash: if_hash.map(ToString::to_string),
         dry_run,
     };
 
     let result = edit::apply_edit(&request)?;
+    let effective_op = effective_edit_op(op, replace_text, anchor)?;
+    let op_label = edit_op_label(op, replace_text, anchor);
 
     if dry_run {
         if cli.json {
             return print_json(json!({
                 "path": rel_path,
-                "op": edit_op_str(op),
+                "op": op_label,
                 "dry_run": true,
                 "changed": result.changed,
                 "old_hash": format!("{:x}", result.old_hash),
                 "new_hash": format!("{:x}", result.new_hash),
                 "line_count": result.line_count,
+                "lines_added": result.lines_added,
+                "lines_removed": result.lines_removed,
+                "preview_mode": preview_mode_str(preview_mode),
                 "preview": result.preview,
             }));
         }
@@ -1411,31 +1604,31 @@ fn cmd_edit(
         let (mut engine, snap_path) = if let Some((engine, snap_path)) = loaded_engine.take() {
             (engine, snap_path)
         } else {
-            (
-                load_engine_for_root(&root, cli)?,
-                graph_path_for_root(&root, cli),
-            )
+            let loaded = load_engine_for_root(&root, cli)?;
+            (loaded.engine, loaded.graph_path)
         };
-        engine.index_edited_file(&rel_path, &result.new_content, store_op(op));
+        engine.index_edited_file(&rel_path, &result.new_content, store_op(effective_op));
         if !cli.no_graph {
             snapshot::write_snapshot(&engine, &snap_path)?;
         }
         if cli.json {
             return print_json(json!({
                 "path": rel_path,
-                "op": edit_op_str(op),
+                "op": op_label,
                 "dry_run": false,
                 "changed": true,
                 "hash": format!("{:x}", result.new_hash),
                 "line_count": result.line_count,
+                "lines_added": result.lines_added,
+                "lines_removed": result.lines_removed,
                 "graph": (!cli.no_graph).then(|| snap_path.display().to_string()),
                 "persisted": !cli.no_graph,
                 "change_sequence": engine.store().current_seq(),
             }));
         }
         println!(
-            "edit applied: {} lines, hash:{:x}",
-            result.line_count, result.new_hash
+            "edit applied to {}: +{} -{} lines ({} total), hash:{:x}",
+            rel_path, result.lines_added, result.lines_removed, result.line_count, result.new_hash
         );
         if !cli.no_graph {
             println!("Graph saved to {}", snap_path.display());
@@ -1444,11 +1637,13 @@ fn cmd_edit(
         if cli.json {
             return print_json(json!({
                 "path": rel_path,
-                "op": edit_op_str(op),
+                "op": op_label,
                 "dry_run": false,
                 "changed": false,
                 "hash": format!("{:x}", result.new_hash),
                 "line_count": result.line_count,
+                "lines_added": result.lines_added,
+                "lines_removed": result.lines_removed,
             }));
         }
         println!("edit unchanged: hash:{:x}", result.new_hash);
@@ -1492,10 +1687,8 @@ fn cmd_create(
         let (mut engine, snap_path) = if let Some((engine, snap_path)) = loaded_engine.take() {
             (engine, snap_path)
         } else {
-            (
-                load_engine_for_root(&root, cli)?,
-                graph_path_for_root(&root, cli),
-            )
+            let loaded = load_engine_for_root(&root, cli)?;
+            (loaded.engine, loaded.graph_path)
         };
         engine.index_edited_file(&rel_path, &content, store::Op::Create);
         if !cli.no_graph {
@@ -1535,6 +1728,35 @@ fn store_op(op: edit::EditOp) -> store::Op {
         edit::EditOp::Replace => store::Op::Replace,
         edit::EditOp::Insert => store::Op::Insert,
         edit::EditOp::Delete => store::Op::Delete,
+    }
+}
+
+fn effective_edit_op(
+    op: Option<edit::EditOp>,
+    replace_text: Option<&str>,
+    anchor: Option<&str>,
+) -> Result<edit::EditOp> {
+    match (op, replace_text.is_some(), anchor.is_some()) {
+        (Some(op), false, false) => Ok(op),
+        (None, true, false) => Ok(edit::EditOp::Replace),
+        (None, false, true) => Ok(edit::EditOp::Insert),
+        _ => bail!("patch requires exactly one target: operation, --replace-text, or --anchor"),
+    }
+}
+
+fn edit_op_label(
+    op: Option<edit::EditOp>,
+    replace_text: Option<&str>,
+    anchor: Option<&str>,
+) -> &'static str {
+    if replace_text.is_some() {
+        "replace-text"
+    } else if anchor.is_some() {
+        "anchor"
+    } else if let Some(op) = op {
+        edit_op_str(op)
+    } else {
+        "unknown"
     }
 }
 
@@ -1611,7 +1833,8 @@ fn cmd_ls(path: &str, cli: &Cli) -> Result<()> {
 }
 
 fn cmd_status(cli: &Cli) -> Result<()> {
-    let engine = load_engine(cli)?;
+    let loaded = load_engine_for_root(&current_root()?, cli)?;
+    let engine = loaded.engine;
     let snap_path = graph_path(cli)?;
     let graph = if snap_path.exists() {
         let metadata = std::fs::metadata(&snap_path)?;
@@ -1634,6 +1857,11 @@ fn cmd_status(cli: &Cli) -> Result<()> {
             "seq": engine.store().current_seq(),
             "change_history_persisted": false,
             "graph": graph,
+            "refresh": {
+                "indexed": loaded.refresh.indexed,
+                "removed": loaded.refresh.removed,
+                "changed": loaded.refresh.changed(),
+            },
         }));
     }
 
@@ -1850,6 +2078,13 @@ fn edit_op_str(op: edit::EditOp) -> &'static str {
         edit::EditOp::Replace => "replace",
         edit::EditOp::Insert => "insert",
         edit::EditOp::Delete => "delete",
+    }
+}
+
+fn preview_mode_str(mode: edit::PreviewMode) -> &'static str {
+    match mode {
+        edit::PreviewMode::Compact => "compact",
+        edit::PreviewMode::Full => "full",
     }
 }
 

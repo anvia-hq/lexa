@@ -140,6 +140,7 @@ Read focused line ranges instead of entire large files:
 
 ```bash
 lexa read <path> -L 20-80
+lexa read <path> --line-start 20 --line-end 80
 ```
 
 Use hashes before edits or when avoiding stale reads:
@@ -159,6 +160,8 @@ For line-based edits, prefer Lexa patch operations when they match the task:
 lexa patch <path> replace -L 12-14 --content '<new content>'
 lexa patch <path> insert --after 20 --content '<new content>'
 lexa patch <path> delete -L 40-45
+lexa patch <path> --replace-text '<old exact text>' --content '<new content>'
+lexa patch <path> --anchor '<unique exact anchor>' --placement after --content '<new content>'
 lexa create <path> --content '<new file content>'
 ```
 
@@ -167,6 +170,9 @@ For safety, pair edits with `--if-hash` when another process or user may have ch
 ```bash
 lexa patch <path> replace -L 12 --if-hash <hash> --content '<new content>'
 ```
+
+Use `--dry-run --preview compact` before range-sensitive edits when you need a
+focused preview. Compact preview is the default for patch dry runs.
 
 Use the native editor or normal patch tools instead of Lexa when edits are structural, span many non-contiguous ranges, or require formatter-aware rewrites.
 
