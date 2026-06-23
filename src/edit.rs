@@ -262,7 +262,7 @@ fn unique_match(haystack: &str, needle: &str, flag: &str) -> Result<(usize, usiz
     let mut matches = haystack.match_indices(needle);
     let Some((start, _)) = matches.next() else {
         bail!(
-            "{flag} did not match the file content. If the text contains shell metacharacters, wrap it in single quotes or pass replacement content with --content-file."
+            "{flag} did not match the file content. If the text contains shell metacharacters, wrap it in single quotes."
         );
     };
     if matches.next().is_some() {
