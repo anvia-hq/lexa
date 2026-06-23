@@ -924,7 +924,7 @@ impl McpServer {
                 format!("patch unchanged: hash:{hash}"),
                 json!({
                     "path": rel_path,
-                    "op": req_str(args, "op")?,
+                    "op": op_label,
                     "dry_run": false,
                     "changed": false,
                     "hash": hash,
@@ -2007,6 +2007,16 @@ mod tests {
                 "content": "TWO"
             }))
             .unwrap();
+
+        let unchanged = server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "replace_text": "TWO",
+                "content": "TWO"
+            }))
+            .unwrap();
+        assert_eq!(unchanged.structured["op"], "replace-text");
+        assert_eq!(unchanged.structured["changed"], false);
 
         let anchor = server
             .tool_patch(&json!({

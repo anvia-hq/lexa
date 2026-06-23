@@ -658,17 +658,7 @@ fn load_engine_for_root(root: &Path, cli: &Cli) -> Result<LoadedEngine> {
     }
 
     if loaded_graph {
-        refresh = freshness::refresh_project(&mut engine, root)
-            .with_context(|| format!("failed to refresh graph for {}", root.display()))?;
-        if refresh.changed() {
-            eprintln!(
-                "Refreshed graph: {} indexed, {} removed",
-                refresh.indexed, refresh.removed
-            );
-            if !cli.no_graph {
-                snapshot::write_snapshot(&engine, &path)?;
-            }
-        }
+        refresh = refresh_loaded_graph(&mut engine, root, &path, !cli.no_graph)?;
     }
 
     Ok(LoadedEngine {
@@ -694,16 +684,28 @@ fn load_existing_engine_for_root(root: &Path, cli: &Cli) -> Result<(engine::Engi
             snap_path.display()
         )
     })?;
-    let refresh = freshness::refresh_project(&mut engine, root)
+    refresh_loaded_graph(&mut engine, root, &snap_path, true)?;
+    Ok((engine, snap_path))
+}
+
+fn refresh_loaded_graph(
+    engine: &mut engine::Engine,
+    root: &Path,
+    snap_path: &Path,
+    persist_graph: bool,
+) -> Result<freshness::RefreshSummary> {
+    let refresh = freshness::refresh_project(engine, root)
         .with_context(|| format!("failed to refresh graph for {}", root.display()))?;
     if refresh.changed() {
         eprintln!(
             "Refreshed graph: {} indexed, {} removed",
             refresh.indexed, refresh.removed
         );
-        snapshot::write_snapshot(&engine, &snap_path)?;
+        if persist_graph {
+            snapshot::write_snapshot(engine, snap_path)?;
+        }
     }
-    Ok((engine, snap_path))
+    Ok(refresh)
 }
 
 fn required_text(
