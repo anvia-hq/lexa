@@ -389,17 +389,37 @@ fn build_compact_preview(old_content: &str, new_content: &str) -> String {
         bounds.new_end.saturating_sub(bounds.new_start)
     ));
 
-    for idx in old_context_start..bounds.old_start {
-        out.push_str(&format!(" {:>5}: {}\n", idx + 1, old_lines[idx]));
+    for (idx, line) in old_lines
+        .iter()
+        .enumerate()
+        .take(bounds.old_start)
+        .skip(old_context_start)
+    {
+        out.push_str(&format!(" {:>5}: {line}\n", idx + 1));
     }
-    for idx in bounds.old_start..bounds.old_end {
-        out.push_str(&format!("-{:>5}: {}\n", idx + 1, old_lines[idx]));
+    for (idx, line) in old_lines
+        .iter()
+        .enumerate()
+        .take(bounds.old_end)
+        .skip(bounds.old_start)
+    {
+        out.push_str(&format!("-{:>5}: {line}\n", idx + 1));
     }
-    for idx in bounds.new_start..bounds.new_end {
-        out.push_str(&format!("+{:>5}: {}\n", idx + 1, new_lines[idx]));
+    for (idx, line) in new_lines
+        .iter()
+        .enumerate()
+        .take(bounds.new_end)
+        .skip(bounds.new_start)
+    {
+        out.push_str(&format!("+{:>5}: {line}\n", idx + 1));
     }
-    for idx in bounds.old_end..old_context_end {
-        out.push_str(&format!(" {:>5}: {}\n", idx + 1, old_lines[idx]));
+    for (idx, line) in old_lines
+        .iter()
+        .enumerate()
+        .take(old_context_end)
+        .skip(bounds.old_end)
+    {
+        out.push_str(&format!(" {:>5}: {line}\n", idx + 1));
     }
 
     if old_context_end < old_lines.len() || new_context_end < new_lines.len() {
