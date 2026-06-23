@@ -12,6 +12,7 @@ Substring search by default; opt into regex with `--regex`.
 
 ```bash
 lexa text-search "render"
+lexa text-search --query "render" --max-results 20
 lexa text-search "handle_request" --scope
 lexa text-search --regex "render[A-Z]\\w+"
 lexa text-search "useEffect" --path-glob "**/*.{ts,tsx}"
@@ -21,6 +22,7 @@ lexa text-search "TODO" --compact --paths-only
 | Flag | Description |
 | --- | --- |
 | `-m, --max <N>` | Cap the number of results (default: 20). |
+| `--query <TEXT>` / `--max-results <N>` | Compatibility aliases for agent-generated commands. |
 | `-r, --regex` | Treat `<query>` as a regular expression. |
 | `--scope` | Include the enclosing symbol range for each hit. |
 | `-c, --compact` | Print compact one-line results. |
@@ -47,11 +49,13 @@ only remember part of a name (`createAgent` → `createProjectAgent`).
 ```bash
 lexa symbol-search createAgent
 lexa symbol-search termnl --max 10
+lexa symbol-search --query termnl --max-results 10
 ```
 
 | Flag | Description |
 | --- | --- |
 | `-m, --max <N>` | Cap the number of results (default: 20). |
+| `--query <TEXT>` / `--max-results <N>` | Compatibility aliases. |
 
 ## `word-refs <word>`
 
@@ -70,11 +74,13 @@ declaration-like occurrences such as type aliases.
 ```bash
 lexa callers createProjectAgent
 lexa callers handle_request --max 50
+lexa callers --query handle_request --max-results 50
 ```
 
 | Flag | Description |
 | --- | --- |
 | `-m, --max <N>` | Cap the number of results (default: 20). |
+| `--query <TEXT>` / `--max-results <N>` | Compatibility aliases. |
 
 ## Useful search flags
 

@@ -833,7 +833,16 @@ impl McpServer {
         let rel_path =
             normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Existing)?;
         let abs_path = project_target_path(&self.root, &rel_path);
-        let op = parse_edit_op(req_str(args, "op")?)?;
+        let op = opt_str(args, "op").map(parse_edit_op).transpose()?;
+        let replace_text = opt_str(args, "replace_text").map(ToString::to_string);
+        let anchor = opt_str(args, "anchor").map(ToString::to_string);
+        let placement = opt_str(args, "placement")
+            .map(parse_anchor_placement)
+            .transpose()?;
+        let preview_mode = opt_str(args, "preview_mode")
+            .map(parse_preview_mode)
+            .transpose()?
+            .unwrap_or(edit::PreviewMode::Compact);
 
         let request = edit::EditRequest {
             path: abs_path,
@@ -842,11 +851,25 @@ impl McpServer {
             range_end: opt_u32(args, "range_end"),
             after: opt_u32(args, "after"),
             content: opt_str(args, "content").map(ToString::to_string),
+            replace_text,
+            anchor,
+            placement,
+            preview_mode,
             if_hash: opt_str(args, "if_hash").map(ToString::to_string),
             dry_run: opt_bool(args, "dry_run").unwrap_or(false),
         };
 
         let result = edit::apply_edit(&request)?;
+        let effective_op = effective_edit_op(
+            request.op,
+            request.replace_text.as_deref(),
+            request.anchor.as_deref(),
+        )?;
+        let op_label = edit_op_label(
+            request.op,
+            request.replace_text.as_deref(),
+            request.anchor.as_deref(),
+        );
         if request.dry_run {
             let text = format!(
                 "{}\nold_hash:{:x}\nnew_hash:{:x}",
@@ -856,12 +879,15 @@ impl McpServer {
                 text,
                 json!({
                     "path": rel_path,
-                    "op": req_str(args, "op")?,
+                    "op": op_label,
                     "dry_run": true,
                     "changed": result.changed,
                     "old_hash": format!("{:x}", result.old_hash),
                     "new_hash": format!("{:x}", result.new_hash),
                     "line_count": result.line_count,
+                    "lines_added": result.lines_added,
+                    "lines_removed": result.lines_removed,
+                    "preview_mode": preview_mode_str(preview_mode),
                     "preview": result.preview,
                 }),
             ));
@@ -869,20 +895,25 @@ impl McpServer {
 
         if result.changed {
             self.engine
-                .index_edited_file(&rel_path, &result.new_content, store_op(op));
+                .index_edited_file(&rel_path, &result.new_content, store_op(effective_op));
             if self.persist_graph {
                 snapshot::write_snapshot(&self.engine, &self.graph_path)?;
             }
             let hash = format!("{:x}", result.new_hash);
             Ok(ToolOutput::new(
-                format!("patch applied: {} lines, hash:{hash}", result.line_count),
+                format!(
+                    "patch applied to {rel_path}: +{} -{} lines ({} total), hash:{hash}",
+                    result.lines_added, result.lines_removed, result.line_count
+                ),
                 json!({
                     "path": rel_path,
-                    "op": req_str(args, "op")?,
+                    "op": op_label,
                     "dry_run": false,
                     "changed": true,
                     "hash": hash,
                     "line_count": result.line_count,
+                    "lines_added": result.lines_added,
+                    "lines_removed": result.lines_removed,
                     "graph": self.graph_path.display().to_string(),
                     "change_sequence": self.engine.store().current_seq(),
                 }),
@@ -898,6 +929,8 @@ impl McpServer {
                     "changed": false,
                     "hash": hash,
                     "line_count": result.line_count,
+                    "lines_added": result.lines_added,
+                    "lines_removed": result.lines_removed,
                 }),
             ))
         }
@@ -1389,8 +1422,8 @@ fn tools() -> Value {
         ),
         tool(
             "patch",
-            "Use to apply line-based `replace`, `insert`, or `delete` edits safely. Always pair with `if_hash` (use `read` first to get the current hash) to prevent stale edits, and run with `dry_run: true` first to preview. Returns the new hash and `change_sequence` after a successful apply.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"op":{"type":"string","enum":["replace","insert","delete"]},"content":{"type":"string"},"range_start":{"type":"integer"},"range_end":{"type":"integer"},"after":{"type":"integer"},"if_hash":{"type":"string"},"dry_run":{"type":"boolean"}},"required":["path","op"]})
+            "Use to apply line-based `replace`, `insert`, or `delete` edits, exact `replace_text`, or anchor-based insertions safely. Always pair with `if_hash` (use `read` first to get the current hash) to prevent stale edits, and run with `dry_run: true` first to preview. Returns the new hash and `change_sequence` after a successful apply.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"op":{"type":"string","enum":["replace","insert","delete"]},"content":{"type":"string"},"range_start":{"type":"integer"},"range_end":{"type":"integer"},"after":{"type":"integer"},"replace_text":{"type":"string"},"anchor":{"type":"string"},"placement":{"type":"string","enum":["before","after"]},"preview_mode":{"type":"string","enum":["compact","full"]},"if_hash":{"type":"string"},"dry_run":{"type":"boolean"}},"required":["path"]})
         ),
         tool(
             "create",
@@ -1503,11 +1536,67 @@ fn parse_edit_op(op: &str) -> Result<EditOp> {
     }
 }
 
+fn parse_anchor_placement(placement: &str) -> Result<edit::AnchorPlacement> {
+    match placement {
+        "before" => Ok(edit::AnchorPlacement::Before),
+        "after" => Ok(edit::AnchorPlacement::After),
+        _ => bail!("placement must be before or after"),
+    }
+}
+
+fn parse_preview_mode(mode: &str) -> Result<edit::PreviewMode> {
+    match mode {
+        "compact" => Ok(edit::PreviewMode::Compact),
+        "full" => Ok(edit::PreviewMode::Full),
+        _ => bail!("preview_mode must be compact or full"),
+    }
+}
+
 fn store_op(op: EditOp) -> store::Op {
     match op {
         EditOp::Replace => store::Op::Replace,
         EditOp::Insert => store::Op::Insert,
         EditOp::Delete => store::Op::Delete,
+    }
+}
+
+fn effective_edit_op(
+    op: Option<EditOp>,
+    replace_text: Option<&str>,
+    anchor: Option<&str>,
+) -> Result<EditOp> {
+    match (op, replace_text.is_some(), anchor.is_some()) {
+        (Some(op), false, false) => Ok(op),
+        (None, true, false) => Ok(EditOp::Replace),
+        (None, false, true) => Ok(EditOp::Insert),
+        _ => bail!("patch requires exactly one target: op, replace_text, or anchor"),
+    }
+}
+
+fn edit_op_label(
+    op: Option<EditOp>,
+    replace_text: Option<&str>,
+    anchor: Option<&str>,
+) -> &'static str {
+    if replace_text.is_some() {
+        "replace-text"
+    } else if anchor.is_some() {
+        "anchor"
+    } else if let Some(op) = op {
+        match op {
+            EditOp::Replace => "replace",
+            EditOp::Insert => "insert",
+            EditOp::Delete => "delete",
+        }
+    } else {
+        "unknown"
+    }
+}
+
+fn preview_mode_str(mode: edit::PreviewMode) -> &'static str {
+    match mode {
+        edit::PreviewMode::Compact => "compact",
+        edit::PreviewMode::Full => "full",
     }
 }
 
@@ -1890,6 +1979,58 @@ mod tests {
             "if_hash": "bad"
         })));
         assert!(bad_hash.contains("hash mismatch"));
+    }
+
+    #[test]
+    fn patch_tool_supports_replace_text_anchor_and_preview_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let mut server = indexed_server(&root, &[("src/app.rs", "one\ntwo\nthree\n")]);
+
+        let dry_run = server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "replace_text": "two",
+                "content": "TWO",
+                "dry_run": true,
+                "preview_mode": "compact"
+            }))
+            .unwrap();
+        assert_eq!(dry_run.structured["op"], "replace-text");
+        assert_eq!(dry_run.structured["preview_mode"], "compact");
+        assert_eq!(dry_run.structured["lines_added"], 1);
+        assert_eq!(dry_run.structured["lines_removed"], 1);
+
+        server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "replace_text": "two",
+                "content": "TWO"
+            }))
+            .unwrap();
+
+        let anchor = server
+            .tool_patch(&json!({
+                "path": "src/app.rs",
+                "anchor": "TWO",
+                "placement": "after",
+                "content": "inserted"
+            }))
+            .unwrap();
+        assert_eq!(anchor.structured["op"], "anchor");
+        assert_eq!(anchor.structured["lines_added"], 1);
+        assert_eq!(anchor.structured["lines_removed"], 0);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("src/app.rs")).unwrap(),
+            "one\nTWO\ninserted\nthree\n"
+        );
+
+        std::fs::write(root.path().join("src/app.rs"), "same\nsame\n").unwrap();
+        let err = tool_err(server.tool_patch(&json!({
+            "path": "src/app.rs",
+            "replace_text": "same",
+            "content": "changed"
+        })));
+        assert!(err.contains("matched multiple locations"));
     }
 
     #[test]

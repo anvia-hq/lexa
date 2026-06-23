@@ -215,6 +215,26 @@ mode. `if_hash` short-circuits when the on-disk hash matches.
 instead of a range. Always read with `read` first and pass the resulting
 `hash` to `if_hash` to detect concurrent changes.
 
+The same tool also accepts exact text targets:
+
+```json
+{
+  "name": "patch",
+  "arguments": {
+    "path": "src/main.rs",
+    "replace_text": "old block",
+    "content": "new block",
+    "dry_run": true,
+    "preview_mode": "compact"
+  }
+}
+```
+
+For anchor insertion, pass `anchor`, `placement: "before" | "after"`, and
+`content`. Exact text and anchor modes must match one unique location. Patch
+results include `line_count`, `lines_added`, `lines_removed`, and `preview`
+for dry runs.
+
 ## tool-create
 
 ```json

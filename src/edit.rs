@@ -12,13 +12,29 @@ pub enum EditOp {
     Delete,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PreviewMode {
+    Compact,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AnchorPlacement {
+    Before,
+    After,
+}
+
 pub struct EditRequest {
     pub path: PathBuf,
-    pub op: EditOp,
+    pub op: Option<EditOp>,
     pub range_start: Option<u32>,
     pub range_end: Option<u32>,
     pub after: Option<u32>,
     pub content: Option<String>,
+    pub replace_text: Option<String>,
+    pub anchor: Option<String>,
+    pub placement: Option<AnchorPlacement>,
+    pub preview_mode: PreviewMode,
     pub if_hash: Option<String>,
     pub dry_run: bool,
 }
@@ -28,6 +44,8 @@ pub struct EditResult {
     pub old_hash: u64,
     pub new_hash: u64,
     pub line_count: usize,
+    pub lines_added: usize,
+    pub lines_removed: usize,
     pub changed: bool,
     pub preview: String,
 }
@@ -66,7 +84,8 @@ pub fn apply_edit(req: &EditRequest) -> Result<EditResult> {
     let new_content = build_new_content(&old_content, req)?;
     let new_hash = hash_content(&new_content);
     let changed = old_hash != new_hash;
-    let preview = build_preview(&old_content, &new_content);
+    let (lines_added, lines_removed) = diff_stats(&old_content, &new_content);
+    let preview = build_preview(&old_content, &new_content, req.preview_mode);
 
     if changed && !req.dry_run {
         atomic_write(path, &new_content)?;
@@ -78,6 +97,8 @@ pub fn apply_edit(req: &EditRequest) -> Result<EditResult> {
         old_hash,
         new_hash,
         changed,
+        lines_added,
+        lines_removed,
         preview,
     })
 }
@@ -104,10 +125,34 @@ pub fn create_file(req: &CreateRequest) -> Result<CreateResult> {
 }
 
 fn build_new_content(old_content: &str, req: &EditRequest) -> Result<String> {
+    validate_target_shape(req)?;
+
+    if let Some(replace_text) = &req.replace_text {
+        let replacement = req
+            .content
+            .as_deref()
+            .ok_or_else(|| anyhow!("--replace-text requires --content or --content-file"))?;
+        return replace_exact_text(old_content, replace_text, replacement);
+    }
+
+    if let Some(anchor) = &req.anchor {
+        let content = req
+            .content
+            .as_deref()
+            .ok_or_else(|| anyhow!("--anchor requires --content or --content-file"))?;
+        let placement = req
+            .placement
+            .ok_or_else(|| anyhow!("--anchor requires --placement before|after"))?;
+        return insert_at_anchor(old_content, anchor, placement, content);
+    }
+
     let mut lines: Vec<String> = old_content.lines().map(ToString::to_string).collect();
     let had_trailing_newline = old_content.ends_with('\n');
 
-    match req.op {
+    match req
+        .op
+        .ok_or_else(|| anyhow!("patch requires an operation or --replace-text/--anchor"))?
+    {
         EditOp::Replace => {
             let (start, end) = concrete_range(req)?;
             ensure_range_in_bounds(start, end, lines.len())?;
@@ -132,6 +177,96 @@ fn build_new_content(old_content: &str, req: &EditRequest) -> Result<String> {
         result.push('\n');
     }
     Ok(result)
+}
+
+fn validate_target_shape(req: &EditRequest) -> Result<()> {
+    let mut target_count = 0;
+    if req.op.is_some() {
+        target_count += 1;
+    }
+    if req.replace_text.is_some() {
+        target_count += 1;
+    }
+    if req.anchor.is_some() {
+        target_count += 1;
+    }
+    if target_count != 1 {
+        bail!("patch requires exactly one target: operation, --replace-text, or --anchor");
+    }
+
+    if req.replace_text.is_some()
+        && (req.range_start.is_some()
+            || req.range_end.is_some()
+            || req.after.is_some()
+            || req.placement.is_some())
+    {
+        bail!("--replace-text cannot be combined with line range, --after, or --placement");
+    }
+
+    if req.anchor.is_some()
+        && (req.range_start.is_some() || req.range_end.is_some() || req.after.is_some())
+    {
+        bail!("--anchor cannot be combined with line range or --after");
+    }
+
+    Ok(())
+}
+
+fn replace_exact_text(old_content: &str, old_text: &str, replacement: &str) -> Result<String> {
+    if old_text.is_empty() {
+        bail!("--replace-text cannot be empty");
+    }
+    let (start, end) = unique_match(old_content, old_text, "--replace-text")?;
+    let mut result = String::with_capacity(old_content.len() - old_text.len() + replacement.len());
+    result.push_str(&old_content[..start]);
+    result.push_str(replacement);
+    result.push_str(&old_content[end..]);
+    Ok(result)
+}
+
+fn insert_at_anchor(
+    old_content: &str,
+    anchor: &str,
+    placement: AnchorPlacement,
+    content: &str,
+) -> Result<String> {
+    if anchor.is_empty() {
+        bail!("--anchor cannot be empty");
+    }
+    let (start, end) = unique_match(old_content, anchor, "--anchor")?;
+    let insert_at = match placement {
+        AnchorPlacement::Before => start,
+        AnchorPlacement::After => end,
+    };
+
+    let mut result = String::with_capacity(old_content.len() + content.len() + 2);
+    result.push_str(&old_content[..insert_at]);
+    if placement == AnchorPlacement::After
+        && !content.is_empty()
+        && !old_content[..insert_at].ends_with('\n')
+    {
+        result.push('\n');
+    }
+    result.push_str(content);
+    if !content.is_empty()
+        && !content.ends_with('\n')
+        && !old_content[insert_at..].starts_with('\n')
+    {
+        result.push('\n');
+    }
+    result.push_str(&old_content[insert_at..]);
+    Ok(result)
+}
+
+fn unique_match(haystack: &str, needle: &str, flag: &str) -> Result<(usize, usize)> {
+    let mut matches = haystack.match_indices(needle);
+    let Some((start, _)) = matches.next() else {
+        bail!("{flag} did not match the file content");
+    };
+    if matches.next().is_some() {
+        bail!("{flag} matched multiple locations; provide a unique exact text");
+    }
+    Ok((start, start + needle.len()))
 }
 
 fn ensure_range_in_bounds(start: usize, end: usize, len: usize) -> Result<()> {
@@ -199,11 +334,19 @@ fn temp_path(parent: &Path, filename: &str, content: &str) -> PathBuf {
     ))
 }
 
-fn build_preview(old_content: &str, new_content: &str) -> String {
+fn build_preview(old_content: &str, new_content: &str, mode: PreviewMode) -> String {
     if old_content == new_content {
         return "unchanged".to_string();
     }
 
+    if mode == PreviewMode::Full {
+        return build_full_preview(old_content, new_content);
+    }
+
+    build_compact_preview(old_content, new_content)
+}
+
+fn build_full_preview(old_content: &str, new_content: &str) -> String {
     let old_lines: Vec<&str> = old_content.lines().collect();
     let new_lines: Vec<&str> = new_content.lines().collect();
     let mut out = String::new();
@@ -226,6 +369,94 @@ fn build_preview(old_content: &str, new_content: &str) -> String {
     out
 }
 
+fn build_compact_preview(old_content: &str, new_content: &str) -> String {
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+    let mut out = String::new();
+    out.push_str("--- before\n+++ after\n");
+
+    let bounds = diff_bounds(&old_lines, &new_lines);
+    let context = 3usize;
+    let old_context_start = bounds.old_start.saturating_sub(context);
+    let old_context_end = (bounds.old_end + context).min(old_lines.len());
+    let new_context_end = (bounds.new_end + context).min(new_lines.len());
+
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        display_line(bounds.old_start),
+        bounds.old_end.saturating_sub(bounds.old_start),
+        display_line(bounds.new_start),
+        bounds.new_end.saturating_sub(bounds.new_start)
+    ));
+
+    for idx in old_context_start..bounds.old_start {
+        out.push_str(&format!(" {:>5}: {}\n", idx + 1, old_lines[idx]));
+    }
+    for idx in bounds.old_start..bounds.old_end {
+        out.push_str(&format!("-{:>5}: {}\n", idx + 1, old_lines[idx]));
+    }
+    for idx in bounds.new_start..bounds.new_end {
+        out.push_str(&format!("+{:>5}: {}\n", idx + 1, new_lines[idx]));
+    }
+    for idx in bounds.old_end..old_context_end {
+        out.push_str(&format!(" {:>5}: {}\n", idx + 1, old_lines[idx]));
+    }
+
+    if old_context_end < old_lines.len() || new_context_end < new_lines.len() {
+        out.push_str(" ...\n");
+    }
+
+    out
+}
+
+fn display_line(zero_based: usize) -> usize {
+    zero_based.saturating_add(1)
+}
+
+struct DiffBounds {
+    old_start: usize,
+    old_end: usize,
+    new_start: usize,
+    new_end: usize,
+}
+
+fn diff_bounds(old_lines: &[&str], new_lines: &[&str]) -> DiffBounds {
+    let mut start = 0usize;
+    while start < old_lines.len() && start < new_lines.len() && old_lines[start] == new_lines[start]
+    {
+        start += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < old_lines.len().saturating_sub(start)
+        && suffix < new_lines.len().saturating_sub(start)
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    DiffBounds {
+        old_start: start,
+        old_end: old_lines.len() - suffix,
+        new_start: start,
+        new_end: new_lines.len() - suffix,
+    }
+}
+
+fn diff_stats(old_content: &str, new_content: &str) -> (usize, usize) {
+    if old_content == new_content {
+        return (0, 0);
+    }
+
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+    let bounds = diff_bounds(&old_lines, &new_lines);
+    (
+        bounds.new_end.saturating_sub(bounds.new_start),
+        bounds.old_end.saturating_sub(bounds.old_start),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,11 +470,15 @@ mod tests {
     fn request(path: PathBuf, op: EditOp) -> EditRequest {
         EditRequest {
             path,
-            op,
+            op: Some(op),
             range_start: None,
             range_end: None,
             after: None,
             content: None,
+            replace_text: None,
+            anchor: None,
+            placement: None,
+            preview_mode: PreviewMode::Compact,
             if_hash: None,
             dry_run: false,
         }
@@ -351,6 +586,93 @@ mod tests {
         assert!(!result.changed);
         assert_eq!(result.preview, "unchanged");
         assert_eq!(std::fs::read_to_string(path).unwrap(), "same\n");
+    }
+
+    #[test]
+    fn compact_preview_does_not_report_shifted_insertions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "app.rs", "one\ntwo\nthree\nfour\nfive\n");
+        let mut req = request(path, EditOp::Insert);
+        req.after = Some(2);
+        req.content = Some("inserted".to_string());
+        req.dry_run = true;
+
+        let result = apply_edit(&req).unwrap();
+
+        assert_eq!(result.lines_added, 1);
+        assert_eq!(result.lines_removed, 0);
+        assert!(result.preview.contains("+    3: inserted"));
+        assert!(!result.preview.contains("-    3: three"));
+        assert!(!result.preview.contains("-    4: four"));
+    }
+
+    #[test]
+    fn full_preview_keeps_legacy_shifted_line_comparison() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "app.rs", "one\ntwo\nthree\n");
+        let mut req = request(path, EditOp::Insert);
+        req.after = Some(1);
+        req.content = Some("inserted".to_string());
+        req.preview_mode = PreviewMode::Full;
+        req.dry_run = true;
+
+        let result = apply_edit(&req).unwrap();
+
+        assert!(result.preview.contains("-    2: two"));
+        assert!(result.preview.contains("+    2: inserted"));
+    }
+
+    #[test]
+    fn replace_text_requires_unique_exact_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "app.rs", "one\ntwo\nthree\n");
+        let mut req = request(path.clone(), EditOp::Replace);
+        req.op = None;
+        req.replace_text = Some("two".to_string());
+        req.content = Some("TWO".to_string());
+
+        let result = apply_edit(&req).unwrap();
+
+        assert_eq!(result.new_content, "one\nTWO\nthree\n");
+        assert_eq!(result.lines_added, 1);
+        assert_eq!(result.lines_removed, 1);
+
+        let mut missing = req;
+        missing.replace_text = Some("absent".to_string());
+        assert!(edit_err(&missing).contains("did not match"));
+
+        std::fs::write(&path, "same\nsame\n").unwrap();
+        let mut ambiguous = request(path, EditOp::Replace);
+        ambiguous.op = None;
+        ambiguous.replace_text = Some("same".to_string());
+        ambiguous.content = Some("changed".to_string());
+        assert!(edit_err(&ambiguous).contains("matched multiple locations"));
+    }
+
+    #[test]
+    fn anchor_inserts_before_or_after_unique_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "app.rs", "one\ntwo\nthree\n");
+        let mut after = request(path.clone(), EditOp::Insert);
+        after.op = None;
+        after.anchor = Some("two".to_string());
+        after.placement = Some(AnchorPlacement::After);
+        after.content = Some("after".to_string());
+
+        let result = apply_edit(&after).unwrap();
+        assert_eq!(result.new_content, "one\ntwo\nafter\nthree\n");
+        assert_eq!(result.lines_added, 1);
+        assert_eq!(result.lines_removed, 0);
+
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let mut before = request(path, EditOp::Insert);
+        before.op = None;
+        before.anchor = Some("two".to_string());
+        before.placement = Some(AnchorPlacement::Before);
+        before.content = Some("before".to_string());
+
+        let result = apply_edit(&before).unwrap();
+        assert_eq!(result.new_content, "one\nbefore\ntwo\nthree\n");
     }
 
     #[test]
