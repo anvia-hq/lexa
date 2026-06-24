@@ -23,6 +23,17 @@ impl RefreshSummary {
 }
 
 pub fn refresh_project(engine: &mut Engine, root: impl AsRef<Path>) -> Result<RefreshSummary> {
+    let summary = refresh_project_no_rebuild(engine, root)?;
+    if summary.changed() {
+        engine.rebuild_dep_graph_after_batch();
+    }
+    Ok(summary)
+}
+
+fn refresh_project_no_rebuild(
+    engine: &mut Engine,
+    root: impl AsRef<Path>,
+) -> Result<RefreshSummary> {
     let root = root.as_ref();
     let walked = walker::walk_project_meta(root);
     let indexed = engine
@@ -52,16 +63,20 @@ pub fn refresh_project(engine: &mut Engine, root: impl AsRef<Path>) -> Result<Re
             {
                 continue;
             }
-            engine.index_file_with_modified(&file.path, &content, file.modified_ms);
+            engine.index_file_with_modified_no_rebuild(&file.path, &content, file.modified_ms);
         } else {
-            engine.index_file_meta_only(&file.path, file.byte_size, file.modified_ms);
+            engine.index_file_meta_only_no_dep_rebuild(
+                &file.path,
+                file.byte_size,
+                file.modified_ms,
+            );
         }
         summary.indexed += 1;
     }
 
     for path in indexed.keys() {
         if !walked_paths.contains(path) {
-            engine.remove_file(path);
+            engine.remove_file_no_dep_rebuild(path);
             summary.removed += 1;
         }
     }
@@ -84,7 +99,7 @@ pub fn refresh_paths(
         }
 
         if path.is_dir() {
-            summary.add(refresh_project(engine, root)?);
+            summary.add(refresh_project_no_rebuild(engine, root)?);
             continue;
         }
 
@@ -95,16 +110,24 @@ pub fn refresh_paths(
                         if indexed_content_matches(engine, &walked.path, &walked.content) {
                             continue;
                         }
-                        engine.index_file_with_modified(
+                        engine.index_file_with_modified_no_rebuild(
                             &walked.path,
                             &walked.content,
                             walked.modified_ms,
                         );
                     } else {
-                        engine.index_file_meta_only(&file.path, file.byte_size, file.modified_ms);
+                        engine.index_file_meta_only_no_dep_rebuild(
+                            &file.path,
+                            file.byte_size,
+                            file.modified_ms,
+                        );
                     }
                 } else {
-                    engine.index_file_meta_only(&file.path, file.byte_size, file.modified_ms);
+                    engine.index_file_meta_only_no_dep_rebuild(
+                        &file.path,
+                        file.byte_size,
+                        file.modified_ms,
+                    );
                 }
                 summary.indexed += 1;
             } else if let Some(relative) = walker::relative_path(root, &path) {
@@ -116,6 +139,10 @@ pub fn refresh_paths(
         if let Some(relative) = walker::relative_path(root, &path) {
             remove_indexed_path(engine, &relative, &mut summary);
         }
+    }
+
+    if summary.changed() {
+        engine.rebuild_dep_graph_after_batch();
     }
 
     Ok(summary)
@@ -137,7 +164,7 @@ fn remove_indexed_path(engine: &mut Engine, relative: &str, summary: &mut Refres
         .collect::<Vec<_>>();
 
     for path in paths {
-        engine.remove_file(&path);
+        engine.remove_file_no_dep_rebuild(&path);
         summary.removed += 1;
     }
 }
@@ -199,6 +226,65 @@ mod tests {
         assert_eq!(summary.removed, 1);
         assert!(engine.find_symbol("gone").is_empty());
         assert!(engine.file_map().is_empty());
+    }
+
+    #[test]
+    fn refresh_project_rebuilds_dependency_graph_after_mixed_batch() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/app.ts"),
+            "import { oldValue } from './old_dep';\nexport const app = oldValue;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/old_dep.ts"),
+            "export const oldValue = 'old';\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/remove_me.ts"),
+            "export const removeMe = 1;\n",
+        )
+        .unwrap();
+
+        let mut engine = Engine::new(16);
+        engine.index_project(root);
+        assert_eq!(
+            engine.get_depends_on("src/app.ts"),
+            vec!["src/old_dep.ts".to_string()]
+        );
+
+        std::fs::write(
+            root.join("src/app.ts"),
+            "import { newValue } from './new_dep';\nexport const app = newValue;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/new_dep.ts"),
+            "export const newValue = 'new';\n",
+        )
+        .unwrap();
+        std::fs::remove_file(root.join("src/remove_me.ts")).unwrap();
+
+        let summary = refresh_project(&mut engine, root).unwrap();
+
+        assert_eq!(summary.indexed, 2);
+        assert_eq!(summary.removed, 1);
+        assert_eq!(
+            engine.get_depends_on("src/app.ts"),
+            vec!["src/new_dep.ts".to_string()]
+        );
+        assert_eq!(
+            engine.get_imported_by("src/new_dep.ts"),
+            vec!["src/app.ts".to_string()]
+        );
+        assert!(engine.get_imported_by("src/old_dep.ts").is_empty());
+        assert!(!engine
+            .file_map()
+            .iter()
+            .any(|(path, _)| path == "src/remove_me.ts"));
     }
 
     #[test]

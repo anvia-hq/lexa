@@ -263,7 +263,9 @@ fn cli_auto_refreshes_stale_graph_before_read_and_search() {
         .unwrap();
     assert!(read.status.success());
     assert!(String::from_utf8_lossy(&read.stdout).contains("fresh"));
-    assert!(String::from_utf8_lossy(&read.stderr).contains("Refreshed graph"));
+    let read_stderr = String::from_utf8_lossy(&read.stderr);
+    assert!(read_stderr.contains("Checking graph freshness"));
+    assert!(read_stderr.contains("Refreshed graph"));
 
     let search = lexa()
         .current_dir(project)

@@ -694,6 +694,7 @@ fn refresh_loaded_graph(
     snap_path: &Path,
     persist_graph: bool,
 ) -> Result<freshness::RefreshSummary> {
+    eprintln!("Checking graph freshness...");
     let refresh = freshness::refresh_project(engine, root)
         .with_context(|| format!("failed to refresh graph for {}", root.display()))?;
     if refresh.changed() {
@@ -905,6 +906,7 @@ fn cmd_mcp(
             );
         }
     } else if !no_refresh {
+        mcp_info(&mut diagnostics, "Checking MCP graph freshness...");
         let summary = match freshness::refresh_project(&mut engine, &root) {
             Ok(summary) => summary,
             Err(err) => {
