@@ -298,6 +298,15 @@ impl Engine {
         self.index_file_with_op(path, content, modified_ms, Op::Snapshot, true);
     }
 
+    pub(crate) fn index_file_with_modified_no_rebuild(
+        &mut self,
+        path: &str,
+        content: &str,
+        modified_ms: u64,
+    ) {
+        self.index_file_with_op(path, content, modified_ms, Op::Snapshot, false);
+    }
+
     pub fn index_edited_file(&mut self, path: &str, content: &str, op: Op) {
         self.index_file_with_op(path, content, now_ms(), op, true);
     }
@@ -362,7 +371,21 @@ impl Engine {
         self.rebuild_dep_graph();
     }
 
+    pub(crate) fn index_file_meta_only_no_dep_rebuild(
+        &mut self,
+        path: &str,
+        byte_size: u64,
+        modified_ms: u64,
+    ) {
+        self.index_file_meta_only_no_rebuild(path, byte_size, modified_ms);
+    }
+
     pub fn remove_file(&mut self, path: &str) {
+        self.remove_file_no_dep_rebuild(path);
+        self.rebuild_dep_graph();
+    }
+
+    pub(crate) fn remove_file_no_dep_rebuild(&mut self, path: &str) {
         self.outlines.remove(path);
         self.file_meta.remove(path);
         self.contents.remove(path);
@@ -371,7 +394,6 @@ impl Engine {
         self.trigram_index.remove_file(path);
         self.word_index.remove_file(path);
         self.dep_graph.remove(path);
-        self.rebuild_dep_graph();
         self.store.record_delete(path, 0);
     }
 
@@ -1775,6 +1797,10 @@ impl Engine {
             self.dep_graph
                 .set_resolution(&path, resolution.deps, unresolved);
         }
+    }
+
+    pub(crate) fn rebuild_dep_graph_after_batch(&mut self) {
+        self.rebuild_dep_graph();
     }
 
     pub fn to_snapshot_data(&self) -> snapshot::SnapshotDataRaw {

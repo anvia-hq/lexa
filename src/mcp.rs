@@ -246,6 +246,13 @@ impl McpServer {
             return Ok(());
         }
 
+        let message = format!(
+            "Checking MCP graph freshness for {} changed path(s)",
+            paths.len()
+        );
+        eprintln!("{message}");
+        self.diagnostics.info(message);
+
         let summary = match freshness::refresh_paths(&mut self.engine, &self.root, paths) {
             Ok(summary) => summary,
             Err(err) => {
