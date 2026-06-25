@@ -58,19 +58,36 @@ impl DepGraph {
                 }
             }
         }
-        self.reverse.remove(path);
+        if let Some(importers) = self.reverse.remove(path) {
+            for importer in importers {
+                if let Some(deps) = self.forward.get_mut(&importer) {
+                    deps.retain(|dep| dep != path);
+                }
+            }
+        }
         self.unresolved.remove(path);
     }
 
     pub fn get_imported_by(&self, path: &str) -> Vec<String> {
         self.reverse
             .get(path)
-            .map(|set| set.iter().cloned().collect())
+            .map(|set| {
+                let mut importers: Vec<_> = set.iter().cloned().collect();
+                importers.sort();
+                importers
+            })
             .unwrap_or_default()
     }
 
     pub fn get_depends_on(&self, path: &str) -> Vec<String> {
-        self.forward.get(path).cloned().unwrap_or_default()
+        self.forward
+            .get(path)
+            .map(|deps| {
+                let mut deps = deps.clone();
+                deps.sort();
+                deps
+            })
+            .unwrap_or_default()
     }
 
     pub fn get_unresolved_imports(&self, path: &str) -> Vec<UnresolvedImport> {
@@ -114,15 +131,87 @@ impl DepGraph {
     }
 
     pub(crate) fn forward_deps(&self) -> Vec<(String, Vec<String>)> {
-        self.forward
+        let mut deps: Vec<_> = self
+            .forward
             .iter()
             .map(|(path, deps)| (path.clone(), deps.clone()))
-            .collect()
+            .collect();
+        for (_, deps) in &mut deps {
+            deps.sort();
+        }
+        deps.sort_by(|a, b| a.0.cmp(&b.0));
+        deps
     }
 }
 
 impl Default for DepGraph {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_keeps_forward_and_reverse_edges_consistent() {
+        let mut graph = DepGraph::new();
+        graph.set_resolution("src/app.rs", vec!["src/dep.rs".to_string()], Vec::new());
+
+        graph.remove("src/dep.rs");
+
+        assert!(graph.get_depends_on("src/app.rs").is_empty());
+        assert!(graph.get_imported_by("src/dep.rs").is_empty());
+    }
+
+    #[test]
+    fn dependency_accessors_return_stable_order() {
+        let mut graph = DepGraph::new();
+        graph.set_resolution(
+            "src/app.rs",
+            vec!["src/z.rs".to_string(), "src/a.rs".to_string()],
+            Vec::new(),
+        );
+        graph.set_resolution(
+            "src/z_importer.rs",
+            vec!["src/a.rs".to_string()],
+            Vec::new(),
+        );
+        graph.set_resolution(
+            "src/a_importer.rs",
+            vec!["src/a.rs".to_string()],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            graph.get_depends_on("src/app.rs"),
+            vec!["src/a.rs".to_string(), "src/z.rs".to_string()]
+        );
+        assert_eq!(
+            graph.get_imported_by("src/a.rs"),
+            vec![
+                "src/a_importer.rs".to_string(),
+                "src/app.rs".to_string(),
+                "src/z_importer.rs".to_string(),
+            ]
+        );
+        assert_eq!(
+            graph.forward_deps(),
+            vec![
+                (
+                    "src/a_importer.rs".to_string(),
+                    vec!["src/a.rs".to_string()]
+                ),
+                (
+                    "src/app.rs".to_string(),
+                    vec!["src/a.rs".to_string(), "src/z.rs".to_string()]
+                ),
+                (
+                    "src/z_importer.rs".to_string(),
+                    vec!["src/a.rs".to_string()]
+                ),
+            ]
+        );
     }
 }

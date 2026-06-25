@@ -51,11 +51,22 @@ fn resolve_generic_import_terms(
         return None;
     }
 
-    if let Some(candidate) = exact_import_match(file_meta, importer_path, terms) {
+    let local_terms = terms
+        .iter()
+        .filter(|term| is_local_import_term(term))
+        .cloned()
+        .collect::<Vec<_>>();
+    let exact_terms = if local_terms.is_empty() {
+        terms
+    } else {
+        local_terms.as_slice()
+    };
+
+    if let Some(candidate) = exact_import_match(file_meta, importer_path, exact_terms) {
         return Some(candidate);
     }
 
-    if is_local_generic_import(terms) {
+    if !local_terms.is_empty() {
         return None;
     }
 
@@ -196,10 +207,12 @@ fn import_terms(import: &str) -> Vec<String> {
     expanded
 }
 
+fn is_local_import_term(term: &str) -> bool {
+    term.starts_with("./") || term.starts_with("../")
+}
+
 fn is_local_generic_import(terms: &[String]) -> bool {
-    terms
-        .iter()
-        .any(|term| term.starts_with("./") || term.starts_with("../"))
+    terms.iter().any(|term| is_local_import_term(term))
 }
 
 fn rust_import_module_path_groups(importer_path: &str, import: &str) -> Vec<(String, Vec<String>)> {

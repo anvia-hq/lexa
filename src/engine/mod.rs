@@ -2436,6 +2436,18 @@ mod tests {
     }
 
     #[test]
+    fn dependency_graph_does_not_resolve_missing_relative_import_by_basename() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/app.ts", "import { foo } from './missing/foo';\n");
+        engine.index_file("src/foo.ts", "export const foo = 'wrong';\n");
+
+        assert!(engine.get_depends_on("src/app.ts").is_empty());
+        let unresolved = engine.get_unresolved_imports("src/app.ts");
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].import, "./missing/foo");
+    }
+
+    #[test]
     fn dependency_graph_resolves_existing_asset_imports_without_text_indexing_binary_assets() {
         let root = tempfile::tempdir().unwrap();
         let src = root.path().join("src");
