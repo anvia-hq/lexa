@@ -152,35 +152,25 @@ pub enum SymbolKind {
     Module,
 }
 
-impl SymbolKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Function => "function",
-            Self::StructDef => "struct",
-            Self::EnumDef => "enum",
-            Self::UnionDef => "union",
-            Self::Constant => "constant",
-            Self::Variable => "variable",
-            Self::Import => "import",
-            Self::TestDecl => "test",
-            Self::CommentBlock => "comment",
-            Self::TraitDef => "trait",
-            Self::ImplBlock => "impl",
-            Self::TypeAlias => "type_alias",
-            Self::MacroDef => "macro",
-            Self::Method => "method",
-            Self::ClassDef => "class",
-            Self::InterfaceDef => "interface",
-            Self::Module => "module",
-        }
-    }
-}
-
-impl fmt::Display for SymbolKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+impl_as_str_and_display!(SymbolKind,
+    Function => "function",
+    StructDef => "struct",
+    EnumDef => "enum",
+    UnionDef => "union",
+    Constant => "constant",
+    Variable => "variable",
+    Import => "import",
+    TestDecl => "test",
+    CommentBlock => "comment",
+    TraitDef => "trait",
+    ImplBlock => "impl",
+    TypeAlias => "type_alias",
+    MacroDef => "macro",
+    Method => "method",
+    ClassDef => "class",
+    InterfaceDef => "interface",
+    Module => "module",
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
