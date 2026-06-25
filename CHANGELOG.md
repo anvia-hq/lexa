@@ -4,12 +4,18 @@
 
 ### Added
 
+- Added a canonical MCP `TOOL_SPECS` table plus generated `skill/SKILL.md` and `docs/tools.md` workflows.
+- Added `xtask gen-skill` for regenerating MCP tool documentation from `TOOL_SPECS`.
+
 ### Changed
+
+- `mcp::tools()` now consumes `TOOL_SPECS`, and MCP `tools/list` descriptions use short summaries.
 
 ### Fixed
 
 ### Tests
 
+- Added invariant tests for MCP tool specs and generated tool-list shape.
 ## v0.7.0 - 2026-06-22
 
 ### Changed
