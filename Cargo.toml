@@ -38,6 +38,13 @@ tree-sitter-php = "0.23"
 criterion = "0.5"
 tempfile = "3"
 
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+correctness = "deny"
+unwrap_used = "deny"
+
 [[bench]]
 name = "engine"
 harness = false

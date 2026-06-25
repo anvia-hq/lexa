@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use lexa::engine::{self, ContextOptions, FileFilterOptions, SearchOptions};
