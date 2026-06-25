@@ -24,6 +24,8 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex
 ```
 
+Install and upgrade details: [docs/install.md](docs/install.md)
+
 ## Quick Start
 
 ```bash
