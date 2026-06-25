@@ -16,9 +16,16 @@ cargo test
 Before opening a pull request, run:
 
 ```bash
+just verify
+```
+
+This mirrors the underlying commands:
+
+```bash
 cargo fmt -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+cargo build
 ```
 
 For release-build or performance-sensitive changes, also run:
