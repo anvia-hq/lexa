@@ -1,6 +1,8 @@
 /target
 .lexa/
 .DS_Store
+*.swp
+dist/
 www/node_modules
 www/dist
 www/src/dist
