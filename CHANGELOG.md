@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+### Changed
+
+### Fixed
+
+### Tests
+
 ## v0.7.0 - 2026-06-22
 
 ### Changed
