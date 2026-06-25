@@ -23,10 +23,11 @@ fn main() -> Result<()> {
     };
 
     match command.as_str() {
-        "gen-skill" => {
-            let check = args.any(|arg| arg == "--check");
-            gen_skill(check)
-        }
+        "gen-skill" => match args.collect::<Vec<_>>().as_slice() {
+            [] => gen_skill(false),
+            [flag] if flag == "--check" => gen_skill(true),
+            _ => bail!("usage: xtask gen-skill [--check]"),
+        },
         other => bail!("unknown xtask command: {other}"),
     }
 }
@@ -40,8 +41,13 @@ fn gen_skill(check: bool) -> Result<()> {
 
     let skill_existing = std::fs::read_to_string(&skill_path)
         .with_context(|| format!("failed to read {}", skill_path.display()))?;
-    let tools_existing =
-        std::fs::read_to_string(&tools_path).unwrap_or_else(|_| format!("{START}{END}"));
+    let tools_existing = match std::fs::read_to_string(&tools_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => format!("{START}{END}"),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", tools_path.display()))
+        }
+    };
 
     let skill_updated =
         replace_between_sentinels(&skill_existing, START, END, &render_skill_table(&specs))?;

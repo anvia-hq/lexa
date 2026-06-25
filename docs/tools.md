@@ -96,20 +96,53 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "query"
+      ]
+    },
+    {
+      "required": [
+        "path"
+      ]
+    },
+    {
+      "required": [
+        "pattern"
+      ]
+    },
+    {
+      "required": [
+        "name"
+      ]
+    }
+  ],
   "properties": {
     "max": {
+      "description": "Alias for max_results.",
       "type": "integer"
     },
     "max_results": {
       "type": "integer"
     },
+    "name": {
+      "description": "Alias for query.",
+      "type": "string"
+    },
+    "path": {
+      "description": "Alias for query.",
+      "type": "string"
+    },
+    "pattern": {
+      "description": "Alias for query.",
+      "type": "string"
+    },
     "query": {
       "type": "string"
     }
   },
-  "required": [
-    "query"
-  ],
+  "required": [],
   "type": "object"
 }
 ```
@@ -146,14 +179,28 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "name"
+      ]
+    },
+    {
+      "required": [
+        "query"
+      ]
+    }
+  ],
   "properties": {
     "name": {
       "type": "string"
+    },
+    "query": {
+      "description": "Alias for name.",
+      "type": "string"
     }
   },
-  "required": [
-    "name"
-  ],
+  "required": [],
   "type": "object"
 }
 ```
@@ -168,6 +215,18 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "query"
+      ]
+    },
+    {
+      "required": [
+        "name"
+      ]
+    }
+  ],
   "properties": {
     "max": {
       "description": "Alias for max_results.",
@@ -176,13 +235,15 @@
     "max_results": {
       "type": "integer"
     },
+    "name": {
+      "description": "Alias for query.",
+      "type": "string"
+    },
     "query": {
       "type": "string"
     }
   },
-  "required": [
-    "query"
-  ],
+  "required": [],
   "type": "object"
 }
 ```
@@ -197,14 +258,28 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "word"
+      ]
+    },
+    {
+      "required": [
+        "query"
+      ]
+    }
+  ],
   "properties": {
+    "query": {
+      "description": "Alias for word.",
+      "type": "string"
+    },
     "word": {
       "type": "string"
     }
   },
-  "required": [
-    "word"
-  ],
+  "required": [],
   "type": "object"
 }
 ```
@@ -259,14 +334,28 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "name"
+      ]
+    },
+    {
+      "required": [
+        "query"
+      ]
+    }
+  ],
   "properties": {
     "name": {
       "type": "string"
+    },
+    "query": {
+      "description": "Alias for name.",
+      "type": "string"
     }
   },
-  "required": [
-    "name"
-  ],
+  "required": [],
   "type": "object"
 }
 ```
@@ -281,6 +370,18 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "task"
+      ]
+    },
+    {
+      "required": [
+        "query"
+      ]
+    }
+  ],
   "properties": {
     "language": {
       "type": "string"
@@ -303,13 +404,15 @@
       "description": "Restrict context to a project-relative path prefix.",
       "type": "string"
     },
+    "query": {
+      "description": "Alias for task.",
+      "type": "string"
+    },
     "task": {
       "type": "string"
     }
   },
-  "required": [
-    "task"
-  ],
+  "required": [],
   "type": "object"
 }
 ```
@@ -619,6 +722,18 @@
 
 ```json
 {
+  "anyOf": [
+    {
+      "required": [
+        "pipeline"
+      ]
+    },
+    {
+      "required": [
+        "steps"
+      ]
+    }
+  ],
   "properties": {
     "pipeline": {
       "description": "Advanced pipe string, e.g. glob src/**/*.rs | search main | limit 5.",

@@ -39,7 +39,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "path_search",
             summary: "Fuzzy-match indexed file paths.",
             description: "Use when you only know part of a file name and want fuzzy matches. Returns scored file-path matches ordered by relevance with a configurable limit. Use `query` (or aliases `path`/`pattern`/`name`) and `max_results`/`max` (default 20).",
-            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":["query"]}),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":"Alias for query."},"pattern":{"type":"string","description":"Alias for query."},"name":{"type":"string","description":"Alias for query."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"anyOf":[{"required":["query"]},{"required":["path"]},{"required":["pattern"]},{"required":["name"]}],"required":[]}),
         },
         ToolSpec {
             name: "outline",
@@ -51,19 +51,19 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "symbol_defs",
             summary: "Find definitions of an exact symbol name.",
             description: "Use when you know the exact name of a function, class, type, or variable and want its precise definition. Returns every matching definition with file path, line range, kind, and detail string. Use `name` (or alias `query`) as the exact match key.",
-            input_schema: json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}),
+            input_schema: json!({"type":"object","properties":{"name":{"type":"string"},"query":{"type":"string","description":"Alias for name."}},"anyOf":[{"required":["name"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "symbol_search",
             summary: "Fuzzy-match symbol names across the project.",
             description: "Use when you only know part of a symbol name and want fuzzy matches across the project (e.g. `createAgent` matching `createProjectAgent`). Returns scored symbol matches with file, line range, kind, and detail; default limit 20.",
-            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":["query"]}),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"name":{"type":"string","description":"Alias for query."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"anyOf":[{"required":["query"]},{"required":["name"]}],"required":[]}),
         },
         ToolSpec {
             name: "word_refs",
             summary: "Find every occurrence of an exact identifier.",
             description: "Use when you want every occurrence of an exact identifier or word, including definitions and declarations. Acts like `grep -w` over the indexed word index. Use `word` (or alias `query`) as the exact token.",
-            input_schema: json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]}),
+            input_schema: json!({"type":"object","properties":{"word":{"type":"string"},"query":{"type":"string","description":"Alias for word."}},"anyOf":[{"required":["word"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "text_search",
@@ -75,13 +75,13 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "callers",
             summary: "Find non-definition call sites of a symbol.",
             description: "Use to find non-definition call sites and usages of a symbol before refactoring. Returns up to 30 results excluding declarations and type aliases, so the list reflects real call impact. Use `name` (or alias `query`) for the exact symbol.",
-            input_schema: json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}),
+            input_schema: json!({"type":"object","properties":{"name":{"type":"string"},"query":{"type":"string","description":"Alias for name."}},"anyOf":[{"required":["name"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "brief",
             summary: "Compose a focused context bundle for a code task.",
             description: "Use when you want Lexa to compose a focused context bundle for a specific code task. Best with symbol names, path fragments, or scoped keywords — not free-form natural-language QA. Supports `path_prefix`/`path`, `path_glob`, `language`, and `max_results` (default 10).",
-            input_schema: json!({"type":"object","properties":{"task":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."},"path_prefix":{"type":"string","description":"Restrict context to a project-relative path prefix."},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"},"language":{"type":"string"}},"required":["task"]}),
+            input_schema: json!({"type":"object","properties":{"task":{"type":"string"},"query":{"type":"string","description":"Alias for task."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."},"path_prefix":{"type":"string","description":"Restrict context to a project-relative path prefix."},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"},"language":{"type":"string"}},"anyOf":[{"required":["task"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "trace_deps",
@@ -147,7 +147,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "pipeline",
             summary: "Chain multiple Lexa operations into one query.",
             description: "Use to chain multiple Lexa operations into one composable query instead of calling each tool separately. Prefer the `steps` array form (e.g. `[\"glob src/**/*.rs\", \"search main\", \"limit 5\"]`); each step is one of: `glob`/`find`, `fuzzy`/`path_search`, `search`/`text_search`, `filter`, `outline`, `deps`, `read`, `sort`, `limit`, `count`.",
-            input_schema: json!({"type":"object","properties":{"pipeline":{"type":"string","description":"Advanced pipe string, e.g. glob src/**/*.rs | search main | limit 5."},"steps":{"type":"array","items":{"type":"string"},"description":"Recommended form; each item is one pipeline step, e.g. [\"glob src/**/*.rs\", \"search main\", \"limit 5\"]. Put search terms inside the relevant step."}},"required":[]}),
+            input_schema: json!({"type":"object","properties":{"pipeline":{"type":"string","description":"Advanced pipe string, e.g. glob src/**/*.rs | search main | limit 5."},"steps":{"type":"array","items":{"type":"string"},"description":"Recommended form; each item is one pipeline step, e.g. [\"glob src/**/*.rs\", \"search main\", \"limit 5\"]. Put search terms inside the relevant step."}},"anyOf":[{"required":["pipeline"]},{"required":["steps"]}],"required":[]}),
         },
     ]
 });
@@ -211,6 +211,27 @@ mod tests {
                         spec.name,
                         key,
                     );
+                }
+            }
+            if let Some(any_of) = obj.get("anyOf").and_then(Value::as_array) {
+                for variant in any_of {
+                    let required = variant
+                        .get("required")
+                        .and_then(Value::as_array)
+                        .unwrap_or_else(|| {
+                            panic!("{}: anyOf variant missing required array", spec.name)
+                        });
+                    for req in required {
+                        let key = req.as_str().unwrap_or_else(|| {
+                            panic!("{}: anyOf required entry is not a string", spec.name)
+                        });
+                        assert!(
+                            props.contains_key(key),
+                            "{}: anyOf required key '{}' missing from properties",
+                            spec.name,
+                            key,
+                        );
+                    }
                 }
             }
         }
