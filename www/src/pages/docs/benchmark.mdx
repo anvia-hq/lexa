@@ -7,9 +7,13 @@ title: Benchmark
 Lexa includes a Criterion-based benchmark suite for indexing, search, and
 snapshot performance.
 
+It also includes deterministic agent tool-suite benchmarks for comparing
+indexed Lexa workflows with non-indexed exploration and for checking edit,
+maintenance, and audit correctness.
+
 ## Running the suite
 
-Full run:
+Engine performance run:
 
 ```bash
 cargo bench --bench engine
@@ -20,6 +24,69 @@ Faster local smoke run:
 ```bash
 cargo bench --bench engine -- --warm-up-time 1 --measurement-time 2 --sample-size 10
 ```
+
+Agent tool-suite runs:
+
+```bash
+cargo test --test agent_retrieval_benchmark -- --nocapture
+cargo test --test agent_edit_safety_benchmark -- --nocapture
+cargo test --test agent_maintenance_benchmark -- --nocapture
+cargo test --test agent_mcp_session_benchmark -- --nocapture
+```
+
+## Agent tool-suite benchmark
+
+The agent benchmarks build temporary synthetic projects with known ground truth
+and cover every Lexa MCP/CLI tool across four suites:
+
+- **Retrieval** covers discovery, glob/path/text/word search, symbols,
+  callers, outlines, dependency tracing, briefs, and pipelines.
+- **Edit safety** covers hash-aware reads, dry-run and real patches, stale hash
+  rejection, file creation, overwrite protection, and session-local changes.
+- **Maintenance** covers recent files, status, reindexing, clearing the graph,
+  and architecture audit findings.
+- **MCP session** starts the real `lexa mcp` process and verifies that
+  session-local mutations are visible to later `changes`, `recent`, and
+  `status` tool calls.
+
+The report prints per-task output bytes, estimated output tokens, reduction
+ratio, and correctness. Token counts use default non-JSON CLI output and
+default MCP text content. Structured JSON calls may be used internally for
+stable correctness checks, but their output is not counted in the token totals.
+Tokens are estimated as `ceil(character_count / 4)`, so treat them as a stable
+local proxy rather than provider-exact token accounting.
+
+The tests fail only on correctness. Token ratios are report data, not strict
+regression thresholds, because CLI output formatting changes can shift them
+without changing retrieval quality. Retrieval tasks include grep-style baselines
+where they are meaningful; edit and maintenance tasks primarily score safety
+and state correctness.
+
+### Agent comparison targets
+
+The retrieval suite compares each indexed Lexa tool against the non-indexed
+workflow an agent would normally fall back to:
+
+| Lexa tool | Compared against |
+| --- | --- |
+| `files` | recursive file listing filtered by directory, language, and line constraints |
+| `list` | recursive file listing under the requested directory |
+| `glob` | file listing filtered by the requested glob shape |
+| `path_search` | full file listing for agent-side fuzzy path matching |
+| `text_search` | grep-style text search, scoped to matching files, plus candidate file reads |
+| `word_refs` | grep-style exact word search across the project |
+| `symbol_defs` | grep for the symbol name plus reading matched candidate files |
+| `symbol_search` | grep query terms plus reading matched candidate files |
+| `callers` | grep for the callee name plus reading matched candidate files |
+| `outline` | full source file read |
+| `trace_deps` | grep for imports/requires plus reading the candidate file |
+| `brief` | grep query terms plus reading matched candidate files |
+| `pipeline` | equivalent grep/list composition plus reading matched candidate files |
+
+Edit, maintenance, and MCP-session rows are primarily safety and state checks.
+Their `n/a` baseline rows cover Lexa-specific behavior such as hash-aware
+edits, dry-run guards, overwrite rejection, session-local change logs, index
+maintenance, and MCP session persistence.
 
 ## Baseline (June 3, 2026, generated Rust corpus)
 
