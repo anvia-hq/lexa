@@ -16,10 +16,19 @@ cargo test
 Before opening a pull request, run:
 
 ```bash
+just verify
+```
+
+This mirrors the underlying commands:
+
+```bash
 cargo fmt -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+cargo build
 ```
+
+When adding, renaming, or rewording an MCP tool, edit `src/mcp/tool_spec.rs` only. Then run `just gen-skill` and commit the regenerated `skill/SKILL.md` and `docs/tools.md` alongside. CI runs `cargo run -p xtask -- gen-skill --check` and will fail otherwise.
 
 For release-build or performance-sensitive changes, also run:
 

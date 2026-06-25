@@ -16,6 +16,8 @@ use crate::project_path::{normalize_project_path, project_target_path, PathMode}
 use crate::snapshot;
 use crate::store;
 
+pub mod tool_spec;
+
 const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_MCP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -1358,126 +1360,14 @@ fn graph_status(path: &PathBuf) -> Value {
 }
 
 fn tools() -> Value {
-    json!([
-        tool(
-            "files",
-            "Use at the start of exploration to get an overview of the indexed project. Returns every indexed file with language, line count, byte size, symbol count, and modified time; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.",
-            json!({"type":"object","properties":{"path":{"type":"string","description":"Optional project-relative path prefix."},"path_glob":{"type":"string"},"language":{"type":"string","description":"Language name such as typescript, rust, json, or markdown."},"min_lines":{"type":"integer"},"max_lines":{"type":"integer"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":[]})
-        ),
-        tool(
-            "list",
-            "Use when you need to see the immediate children of one directory, similar to `ls`. Returns files with their metadata (language, line count, symbols) and subdirectories as plain entries. Faster than `files` for inspecting a single folder.",
-            json!({"type":"object","properties":{"path":{"type":"string"}},"required":[]})
-        ),
-        tool(
-            "glob",
-            "Use when you have an exact glob pattern (e.g. `src/**/*.rs`) and want matching indexed paths. Returns up to 200 paths with match count and truncation flag. Prefer over `path_search` when the pattern is precise rather than approximate.",
-            json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})
-        ),
-        tool(
-            "path_search",
-            "Use when you only know part of a file name and want fuzzy matches. Returns scored file-path matches ordered by relevance with a configurable limit. Use `query` (or aliases `path`/`pattern`/`name`) and `max_results`/`max` (default 20).",
-            json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer"}},"required":["query"]})
-        ),
-        tool(
-            "outline",
-            "Use before reading a file to understand its structure. Returns the file's language, line count, imports, and full symbol list (kind, name, line range, detail). Also surfaces unresolved local imports to flag broken references.",
-            json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
-        ),
-        tool(
-            "symbol_defs",
-            "Use when you know the exact name of a function, class, type, or variable and want its precise definition. Returns every matching definition with file path, line range, kind, and detail string. Use `name` (or alias `query`) as the exact match key.",
-            json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
-        ),
-        tool(
-            "symbol_search",
-            "Use when you only know part of a symbol name and want fuzzy matches across the project (e.g. `createAgent` matching `createProjectAgent`). Returns scored symbol matches with file, line range, kind, and detail; default limit 20.",
-            json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":["query"]})
-        ),
-        tool(
-            "word_refs",
-            "Use when you want every occurrence of an exact identifier or word, including definitions and declarations. Acts like `grep -w` over the indexed word index. Use `word` (or alias `query`) as the exact token.",
-            json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]})
-        ),
-        tool(
-            "text_search",
-            "Use as the grep equivalent over indexed text. Supports substring or regex queries with scope (show enclosing symbol), compact (trimmed output), paths-only (`path:line` pairs), and `path_glob` filters. Default limit 20; results include file, line number, and matched text.",
-            json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"regex":{"type":"boolean"},"scope":{"type":"boolean"},"compact":{"type":"boolean"},"paths_only":{"type":"boolean"},"path_glob":{"type":"string"}},"required":["query"]})
-        ),
-        tool(
-            "callers",
-            "Use to find non-definition call sites and usages of a symbol before refactoring. Returns up to 30 results excluding declarations and type aliases, so the list reflects real call impact. Use `name` (or alias `query`) for the exact symbol.",
-            json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})
-        ),
-        tool(
-            "brief",
-            "Use when you want Lexa to compose a focused context bundle for a specific code task. Best with symbol names, path fragments, or scoped keywords — not free-form natural-language QA. Supports `path_prefix`/`path`, `path_glob`, `language`, and `max_results` (default 10).",
-            json!({"type":"object","properties":{"task":{"type":"string"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."},"path_prefix":{"type":"string","description":"Restrict context to a project-relative path prefix."},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"},"language":{"type":"string"}},"required":["task"]})
-        ),
-        tool(
-            "trace_deps",
-            "Use to understand import relationships between files. `direction: \"imported_by\"` returns who imports the given file; `direction: \"depends_on\"` returns what it imports (including unresolved local imports separately). Set `transitive: true` to expand the full graph in that direction. External packages are not returned as dependencies.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"direction":{"type":"string","enum":["imported_by","depends_on"]},"transitive":{"type":"boolean"}},"required":["path"]})
-        ),
-        tool(
-            "read",
-            "Use to read file contents with optional line range, compact (trimmed) mode, and `if_hash` to detect changes without re-reading content. Returns the file hash plus content; passing the current hash back returns an `unchanged:<hash>` short response.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"line_start":{"type":"integer"},"line_end":{"type":"integer"},"compact":{"type":"boolean"},"if_hash":{"type":"string"}},"required":["path"]})
-        ),
-        tool(
-            "patch",
-            "Use to apply line-based `replace`, `insert`, or `delete` edits, exact `replace_text`, or anchor-based insertions safely. Always pair with `if_hash` (use `read` first to get the current hash) to prevent stale edits, and run with `dry_run: true` first to preview. Returns the new hash and `change_sequence` after a successful apply.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"op":{"type":"string","enum":["replace","insert","delete"]},"content":{"type":"string"},"range_start":{"type":"integer"},"range_end":{"type":"integer"},"after":{"type":"integer"},"replace_text":{"type":"string"},"anchor":{"type":"string"},"placement":{"type":"string","enum":["before","after"]},"preview_mode":{"type":"string","enum":["compact","full"]},"if_hash":{"type":"string"},"dry_run":{"type":"boolean"}},"required":["path"]})
-        ),
-        tool(
-            "create",
-            "Use to create a new file safely. Refuses to overwrite an existing file unless `overwrite: true` is set; supports `dry_run` for previewing. On success the file is indexed and a hash plus `change_sequence` are returned.",
-            json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"overwrite":{"type":"boolean"},"dry_run":{"type":"boolean"}},"required":["path"]})
-        ),
-        tool(
-            "changes",
-            "Use to see which files have been modified since a given sequence number in the current session. Returns the changed paths with their sequence numbers and operations (replace/insert/delete). Note: change history is session-local and is not persisted across restarts.",
-            json!({"type":"object","properties":{"since":{"type":"integer"}},"required":[]})
-        ),
-        tool(
-            "recent",
-            "Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, byte size, symbol count, and modified time. Default limit 10; helpful as a quick \"what just changed\" check.",
-            json!({"type":"object","properties":{"limit":{"type":"integer"}},"required":[]})
-        ),
-        tool(
-            "status",
-            "Use to check the current state of the index: file count, symbol count, unique word count, current sequence number, and graph file path/size. Useful before and after `reindex` or `clear_index`.",
-            json!({"type":"object","properties":{},"required":[]})
-        ),
-        tool(
-            "reindex",
-            "Use to rebuild the in-memory index from scratch after major project changes or when the graph feels stale. Returns the new file/symbol/word counts and persists the graph when persistence is enabled.",
-            json!({"type":"object","properties":{},"required":[]})
-        ),
-        tool(
-            "clear_index",
-            "Use to drop the in-memory index and delete the persisted `.lexa/graph.lexa` file (if present). Useful when switching contexts or recovering from a corrupted graph; you will need to reindex afterward.",
-            json!({"type":"object","properties":{},"required":[]})
-        ),
-        tool(
-            "audit",
-            "Use to run a static, review-oriented architecture audit over the indexed project. Reports import cycles, large files, large symbols, dependency hotspots, and (with `include: [\"dead-code\"]`) unused-code candidates. Not a compiler, typechecker, or linter — a clean audit does not mean the project compiles. Supports `config` (TOML path), `since` (git ref), and `max_results`/`max`.",
-            json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string","description":"Path to a Lexa audit TOML config file, such as lexa.toml or .lexa/audit.toml. This is not a named preset."},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]})
-        ),
-        tool(
-            "pipeline",
-            "Use to chain multiple Lexa operations into one composable query instead of calling each tool separately. Prefer the `steps` array form (e.g. `[\"glob src/**/*.rs\", \"search main\", \"limit 5\"]`); each step is one of: `glob`/`find`, `fuzzy`/`path_search`, `search`/`text_search`, `filter`, `outline`, `deps`, `read`, `sort`, `limit`, `count`.",
-            json!({"type":"object","properties":{"pipeline":{"type":"string","description":"Advanced pipe string, e.g. glob src/**/*.rs | search main | limit 5."},"steps":{"type":"array","items":{"type":"string"},"description":"Recommended form; each item is one pipeline step, e.g. [\"glob src/**/*.rs\", \"search main\", \"limit 5\"]. Put search terms inside the relevant step."}},"required":[]})
-        )
-    ])
-}
-
-fn tool(name: &str, description: &str, input_schema: Value) -> Value {
-    json!({
-        "name": name,
-        "description": description,
-        "inputSchema": input_schema
-    })
+    json!(tool_spec::TOOL_SPECS
+        .iter()
+        .map(|spec| json!({
+            "name": spec.name,
+            "description": spec.summary,
+            "inputSchema": spec.input_schema,
+        }))
+        .collect::<Vec<_>>())
 }
 
 fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -1882,6 +1772,19 @@ mod tests {
         assert!(!names.contains(&"lexa_find_word"));
         assert!(!names.contains(&"lexa_search"));
         assert!(!names.contains(&"lexa_find_callers"));
+    }
+
+    #[test]
+    fn tools_list_shape_matches_table() {
+        let tools = tools();
+        let arr = tools.as_array().expect("tools list must be an array");
+
+        assert_eq!(arr.len(), tool_spec::TOOL_SPECS.len());
+        for (tool, spec) in arr.iter().zip(tool_spec::TOOL_SPECS.iter()) {
+            assert_eq!(tool["name"], spec.name);
+            assert_eq!(tool["description"], spec.summary);
+            assert_eq!(tool["inputSchema"], spec.input_schema);
+        }
     }
 
     #[test]

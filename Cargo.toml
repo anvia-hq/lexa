@@ -7,6 +7,10 @@ license = "MIT"
 repository = "https://github.com/anvia-hq/lexa"
 readme = "README.md"
 
+[workspace]
+members = ["xtask"]
+resolver = "2"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -37,6 +41,13 @@ tree-sitter-php = "0.23"
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3"
+
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+correctness = "deny"
+unwrap_used = "deny"
 
 [[bench]]
 name = "engine"
