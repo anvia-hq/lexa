@@ -1,6 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+macro_rules! impl_as_str_and_display {
+    ($enum:ident, $( $variant:ident => $value:literal ),+ $(,)?) => {
+        impl $enum {
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $( Self::$variant => $value ),+
+                }
+            }
+        }
+
+        impl fmt::Display for $enum {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {
     Zig,
@@ -38,51 +56,41 @@ pub enum Language {
     Unknown,
 }
 
-impl Language {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Zig => "zig",
-            Self::C => "c",
-            Self::Cpp => "cpp",
-            Self::Python => "python",
-            Self::JavaScript => "javascript",
-            Self::TypeScript => "typescript",
-            Self::Rust => "rust",
-            Self::Go => "go",
-            Self::Php => "php",
-            Self::Ruby => "ruby",
-            Self::Hcl => "hcl",
-            Self::R => "r",
-            Self::Markdown => "markdown",
-            Self::Json => "json",
-            Self::Toml => "toml",
-            Self::Yaml => "yaml",
-            Self::Dart => "dart",
-            Self::Java => "java",
-            Self::Kotlin => "kotlin",
-            Self::Swift => "swift",
-            Self::Svelte => "svelte",
-            Self::Vue => "vue",
-            Self::Astro => "astro",
-            Self::Shell => "shell",
-            Self::Css => "css",
-            Self::Scss => "scss",
-            Self::Sql => "sql",
-            Self::Protobuf => "protobuf",
-            Self::Fortran => "fortran",
-            Self::LlvmIr => "llvm_ir",
-            Self::Mlir => "mlir",
-            Self::Tablegen => "tablegen",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-impl fmt::Display for Language {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+impl_as_str_and_display!(Language,
+    Zig => "zig",
+    C => "c",
+    Cpp => "cpp",
+    Python => "python",
+    JavaScript => "javascript",
+    TypeScript => "typescript",
+    Rust => "rust",
+    Go => "go",
+    Php => "php",
+    Ruby => "ruby",
+    Hcl => "hcl",
+    R => "r",
+    Markdown => "markdown",
+    Json => "json",
+    Toml => "toml",
+    Yaml => "yaml",
+    Dart => "dart",
+    Java => "java",
+    Kotlin => "kotlin",
+    Swift => "swift",
+    Svelte => "svelte",
+    Vue => "vue",
+    Astro => "astro",
+    Shell => "shell",
+    Css => "css",
+    Scss => "scss",
+    Sql => "sql",
+    Protobuf => "protobuf",
+    Fortran => "fortran",
+    LlvmIr => "llvm_ir",
+    Mlir => "mlir",
+    Tablegen => "tablegen",
+    Unknown => "unknown",
+);
 
 pub fn detect_language(path: &str) -> Language {
     let ext = path.rsplit('.').next().unwrap_or("");
@@ -144,35 +152,25 @@ pub enum SymbolKind {
     Module,
 }
 
-impl SymbolKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Function => "function",
-            Self::StructDef => "struct",
-            Self::EnumDef => "enum",
-            Self::UnionDef => "union",
-            Self::Constant => "constant",
-            Self::Variable => "variable",
-            Self::Import => "import",
-            Self::TestDecl => "test",
-            Self::CommentBlock => "comment",
-            Self::TraitDef => "trait",
-            Self::ImplBlock => "impl",
-            Self::TypeAlias => "type_alias",
-            Self::MacroDef => "macro",
-            Self::Method => "method",
-            Self::ClassDef => "class",
-            Self::InterfaceDef => "interface",
-            Self::Module => "module",
-        }
-    }
-}
-
-impl fmt::Display for SymbolKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+impl_as_str_and_display!(SymbolKind,
+    Function => "function",
+    StructDef => "struct",
+    EnumDef => "enum",
+    UnionDef => "union",
+    Constant => "constant",
+    Variable => "variable",
+    Import => "import",
+    TestDecl => "test",
+    CommentBlock => "comment",
+    TraitDef => "trait",
+    ImplBlock => "impl",
+    TypeAlias => "type_alias",
+    MacroDef => "macro",
+    Method => "method",
+    ClassDef => "class",
+    InterfaceDef => "interface",
+    Module => "module",
+);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {

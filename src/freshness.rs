@@ -258,7 +258,7 @@ mod tests {
 
         std::fs::write(
             root.join("src/app.ts"),
-            "import { newValue } from './new_dep';\nexport const app = newValue;\n",
+            "import { newValue } from './new_dep';\nexport const app = newValue;\nexport const extra = app;\n",
         )
         .unwrap();
         std::fs::write(

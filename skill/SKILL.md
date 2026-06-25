@@ -9,30 +9,23 @@ Use Lexa when working inside a codebase that benefits from fast local indexing, 
 
 ## Check Availability
 
-First check whether `lexa` is installed:
+Check whether `lexa` is installed:
 
 ```bash
 lexa --version
 ```
 
-If unavailable and the Lexa repository is present, install it:
+If unavailable, install it from the repository or follow [docs/install.md](https://github.com/anvia-hq/lexa/blob/main/docs/install.md):
 
 ```bash
 cargo install --path /path/to/lexa --force
 ```
 
-If unavailable and the repository path is unknown, ask the user for the Lexa repository or binary path.
-
-To upgrade the installed Lexa binary, use:
+Use `lexa upgrade` to upgrade the installed Lexa binary. `upgrade` updates the binary, not the project index; use `lexa index .` to refresh a project's graph.
 
 ```bash
 lexa upgrade
 ```
-
-By default, `upgrade` installs into the directory containing the running `lexa`
-binary. Use `lexa upgrade --install-dir <dir>` or `LEXA_INSTALL_DIR` for an
-explicit target. Use `lexa index .` to refresh a project's graph. Do not describe
-`upgrade` as updating the project index.
 
 ## Index The Project
 
@@ -301,22 +294,7 @@ entrypoint_globs = ["src/main.*", "src/bin/**"]
 
 ## Verification
 
-After any Lexa `patch` or `create` that changes source code, run the relevant
-project checks before claiming the work is complete. Prefer the repository's own
-scripts and metadata (`package.json`, `Cargo.toml`, `pyproject.toml`, etc.).
-For Rust projects, default to:
-
-```bash
-cargo fmt -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-```
-
-For JavaScript and TypeScript projects, inspect `package.json` and run the local
-typecheck, lint, test, or build scripts that represent the project's normal
-verification gate. If the right command is unavailable or fails for unrelated
-environment reasons, report that explicitly instead of treating Lexa audit as a
-substitute.
+After any Lexa `patch` or `create` that changes source code, run the relevant project checks before claiming the work is complete. For Lexa's own verification commands, see [CONTRIBUTING.md](https://github.com/anvia-hq/lexa/blob/main/CONTRIBUTING.md#development-checks).
 
 ## Output Discipline
 
