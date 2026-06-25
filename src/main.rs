@@ -364,6 +364,10 @@ enum Commands {
         #[arg(long = "log-file")]
         log_file: Option<PathBuf>,
     },
+
+    /// Dump MCP tool specs as JSON for repository tooling. Internal use.
+    #[command(name = "dump-tools", hide = true)]
+    DumpTools,
 }
 
 fn main() -> Result<()> {
@@ -601,7 +605,17 @@ fn main() -> Result<()> {
             log_file.as_ref(),
             &cli,
         ),
+        Commands::DumpTools => cmd_dump_tools(),
     }
+}
+
+fn cmd_dump_tools() -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    serde_json::to_writer_pretty(&mut handle, &*lexa::mcp::tool_spec::TOOL_SPECS)?;
+    use std::io::Write as _;
+    writeln!(handle)?;
+    Ok(())
 }
 
 fn current_root() -> Result<PathBuf> {
