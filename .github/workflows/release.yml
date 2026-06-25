@@ -50,6 +50,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Verify generated docs are in sync
+        run: cargo run -p xtask -- gen-skill --check
+
       - name: Check installer syntax
         run: sh -n install.sh
 
