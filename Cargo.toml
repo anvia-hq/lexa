@@ -41,6 +41,7 @@ tree-sitter-php = "0.23"
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3"
+toon-format = { version = "0.5.0", default-features = false }
 
 [lints.rust]
 unused_must_use = "deny"
