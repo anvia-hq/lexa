@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
-    "preview": "astro preview"
+    "preview": "astro preview",
+    "deploy": "wrangler pages deploy dist --project-name lexa --branch main",
+    "deploy:preview": "wrangler pages deploy dist --project-name lexa"
   },
   "dependencies": {
     "@fontsource/geist": "^5.2.9",
@@ -16,5 +18,8 @@
     "marked": "^18.0.5",
     "shiki": "^4.3.0",
     "tailwindcss": "^4.3.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.105.0"
   }
 }
