@@ -59,6 +59,7 @@ pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {
             .then_with(|| {
                 actionability_rank(a.actionability).cmp(&actionability_rank(b.actionability))
             })
+            .then_with(|| audit_path_rank(&a.path).cmp(&audit_path_rank(&b.path)))
             .then_with(|| {
                 b.severity
                     .cmp(&a.severity)
@@ -128,6 +129,27 @@ fn mark_secondary_findings(findings: &mut [AuditFinding]) {
             finding.secondary = true;
         }
     }
+}
+
+fn audit_path_rank(path: &str) -> u8 {
+    if is_audit_test_path(path) {
+        1
+    } else {
+        0
+    }
+}
+
+fn is_audit_test_path(path: &str) -> bool {
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    path.starts_with("test/")
+        || path.starts_with("tests/")
+        || path.starts_with("__tests__/")
+        || path.contains("/test/")
+        || path.contains("/tests/")
+        || path.contains("/__tests__/")
+        || file_name.ends_with("_test.rs")
+        || file_name.contains(".test.")
+        || file_name.contains(".spec.")
 }
 
 fn actionability_rank(actionability: AuditActionability) -> u8 {
@@ -455,6 +477,32 @@ mod tests {
         assert_eq!(report.summary.total_findings, 3);
         assert_eq!(report.summary.returned_findings, 2);
         assert!(report.summary.truncated);
+    }
+
+    #[test]
+    fn audit_ranks_source_findings_before_test_path_findings() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/source.ts", &"line\n".repeat(10));
+        engine.index_file("packages/core/test/huge.test.ts", &"line\n".repeat(30));
+
+        let mut config = AuditConfig::default();
+        config.thresholds.large_file_warning = 10;
+        config.thresholds.large_file_high = 20;
+        let report = run_audit(
+            &engine,
+            AuditOptions {
+                max_results: Some(1),
+                scope: AuditScope::Project,
+                config,
+                includes: AuditIncludes::default(),
+            },
+        );
+
+        assert_eq!(report.summary.total_findings, 2);
+        assert_eq!(report.summary.high, 1);
+        assert_eq!(report.summary.returned_findings, 1);
+        assert_eq!(report.findings[0].path, "src/source.ts");
+        assert_eq!(report.findings[0].severity, AuditSeverity::Warning);
     }
 
     #[test]

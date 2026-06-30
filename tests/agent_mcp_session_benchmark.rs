@@ -3,8 +3,8 @@
 mod common;
 
 use common::{
-    assert_all_correct, bench_result_against, parse_json, print_report, run_lexa, write_fixture,
-    BenchResult,
+    assert_all_correct, bench_result_against, parse_json, parse_toon, print_report, run_lexa,
+    write_fixture, BenchResult,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -46,9 +46,12 @@ fn mcp_patch_task(session: &mut McpSession, project: &Path) -> BenchResult {
         }),
     );
     let text = tool_text(&response);
+    let payload = tool_payload(&response);
     let content = std::fs::read_to_string(project.join("src/app.rs")).unwrap();
-    let correct = text.contains("patch applied to src/app.rs")
-        && text.contains("hash:")
+    let correct = payload["tool"] == "patch"
+        && payload["summary"]["path"] == "src/app.rs"
+        && payload["summary"]["changed"] == true
+        && payload["summary"].get("hash").is_some()
         && content.contains("session_patch_marker");
     bench_result_against(
         SUITE,
@@ -70,8 +73,12 @@ fn mcp_create_task(session: &mut McpSession, project: &Path) -> BenchResult {
         }),
     );
     let text = tool_text(&response);
+    let payload = tool_payload(&response);
     let content = std::fs::read_to_string(project.join("src/session_created.rs")).unwrap();
-    let correct = text.contains("file created:") && content.contains("session_created");
+    let correct = payload["tool"] == "create"
+        && payload["summary"]["path"] == "src/session_created.rs"
+        && payload["summary"]["changed"] == true
+        && content.contains("session_created");
     bench_result_against(
         SUITE,
         "persistent create",
@@ -119,9 +126,10 @@ fn mcp_recent_task(session: &mut McpSession) -> BenchResult {
 fn mcp_status_task(session: &mut McpSession) -> BenchResult {
     let response = session.call_tool("status", json!({}));
     let text = tool_text(&response);
-    let correct = text.contains("seq:")
-        && text.contains("graph_exists: true")
-        && text.contains("change_history_persisted: false");
+    let payload = tool_payload(&response);
+    let correct = payload["summary"]["seq"].as_u64().unwrap() >= 2
+        && payload["summary"]["graph"]["exists"] == true
+        && payload["summary"]["change_history_persisted"] == false;
     bench_result_against(
         SUITE,
         "session status state",
@@ -136,6 +144,10 @@ fn mcp_status_task(session: &mut McpSession) -> BenchResult {
 fn tool_text(response: &Value) -> &str {
     assert_eq!(response["result"]["isError"], false, "{response}");
     response["result"]["content"][0]["text"].as_str().unwrap()
+}
+
+fn tool_payload(response: &Value) -> Value {
+    parse_toon(tool_text(response))
 }
 
 struct McpSession {

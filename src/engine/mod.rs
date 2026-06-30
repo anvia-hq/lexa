@@ -40,6 +40,21 @@ pub struct FileFilterOptions {
     pub max_results: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct WordSearchOptions {
+    pub path_prefix: Option<String>,
+    pub path_glob: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WordSearchResult {
+    pub path: String,
+    pub line_num: u32,
+    pub line_text: String,
+    pub kind: String,
+    pub score: i32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RichSearchResult {
     pub path: String,
@@ -592,6 +607,90 @@ impl Engine {
                     })
             })
             .collect()
+    }
+
+    pub fn search_word_with_options(
+        &self,
+        word: &str,
+        options: &WordSearchOptions,
+    ) -> Vec<WordSearchResult> {
+        let path_prefix = options
+            .path_prefix
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(normalize_filter_prefix);
+
+        let mut results = self
+            .search_word(word)
+            .into_iter()
+            .filter(|result| {
+                path_prefix.as_ref().is_none_or(|prefix| {
+                    result.path == *prefix || result.path.starts_with(&format!("{prefix}/"))
+                }) && options
+                    .path_glob
+                    .as_deref()
+                    .is_none_or(|glob| matches_path_glob(glob, &result.path))
+            })
+            .map(|result| self.classified_word_result(word, result))
+            .collect::<Vec<_>>();
+
+        results.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| {
+                    word_result_path_rank(&left.path).cmp(&word_result_path_rank(&right.path))
+                })
+                .then_with(|| left.path.cmp(&right.path))
+                .then_with(|| left.line_num.cmp(&right.line_num))
+        });
+        results
+    }
+
+    fn classified_word_result(&self, word: &str, result: SearchResult) -> WordSearchResult {
+        let kind = self.word_occurrence_kind(word, &result);
+        let score = word_occurrence_score(kind, &result.path);
+        WordSearchResult {
+            path: result.path,
+            line_num: result.line_num,
+            line_text: result.line_text,
+            kind: kind.to_string(),
+            score,
+        }
+    }
+
+    fn word_occurrence_kind(&self, word: &str, result: &SearchResult) -> &'static str {
+        if is_doc_path(&result.path) {
+            return "doc";
+        }
+
+        let semantic = if self.is_word_definition(word, result) {
+            "definition"
+        } else if is_import_line(&result.line_text) {
+            "import"
+        } else if is_export_line(&result.line_text) {
+            "export"
+        } else if is_call_like_occurrence(word, &result.line_text) {
+            "call"
+        } else {
+            "reference"
+        };
+
+        if is_test_like_path(&result.path) && matches!(semantic, "call" | "reference") {
+            "test"
+        } else {
+            semantic
+        }
+    }
+
+    fn is_word_definition(&self, word: &str, result: &SearchResult) -> bool {
+        self.outlines.get(&result.path).is_some_and(|outline| {
+            outline.symbols.iter().any(|symbol| {
+                symbol.name == word
+                    && symbol.line_start == result.line_num
+                    && !matches!(symbol.kind, SymbolKind::Import | SymbolKind::CommentBlock)
+            })
+        })
     }
 
     pub fn file_map(&self) -> Vec<(String, FileMeta)> {
@@ -1959,14 +2058,16 @@ fn symbol_kind_context_score(kind: SymbolKind) -> i32 {
 }
 
 fn is_test_like_path(path: &str) -> bool {
-    path.contains("/test/")
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    path.starts_with("test/")
+        || path.starts_with("tests/")
+        || path.starts_with("__tests__/")
+        || path.contains("/test/")
         || path.contains("/tests/")
         || path.contains("__tests__")
-        || path.ends_with("_test.rs")
-        || path.ends_with(".test.ts")
-        || path.ends_with(".test.tsx")
-        || path.ends_with(".spec.ts")
-        || path.ends_with(".spec.tsx")
+        || file_name.ends_with("_test.rs")
+        || file_name.contains(".test.")
+        || file_name.contains(".spec.")
 }
 
 fn now_ms() -> u64 {
@@ -1984,6 +2085,86 @@ fn matches_path_glob(pattern: &str, path: &str) -> bool {
         return match_glob(&format!("**/{pattern}"), path);
     }
     false
+}
+
+fn word_result_path_rank(path: &str) -> u8 {
+    if is_test_like_path(path) {
+        5
+    } else if path.starts_with("packages/") && path.contains("/src/") {
+        0
+    } else if path.starts_with("apps/") && path.contains("/src/") {
+        1
+    } else if path.starts_with("src/") {
+        2
+    } else if path.starts_with("packages/") || path.starts_with("apps/") {
+        3
+    } else if path.starts_with("examples/") {
+        4
+    } else if is_doc_path(path) {
+        6
+    } else {
+        4
+    }
+}
+
+fn word_occurrence_score(kind: &str, path: &str) -> i32 {
+    occurrence_kind_score(kind) + word_path_score(path)
+}
+
+fn occurrence_kind_score(kind: &str) -> i32 {
+    match kind {
+        "definition" => 100,
+        "export" => 90,
+        "import" => 75,
+        "call" => 65,
+        "reference" => 50,
+        "test" => 30,
+        "doc" => 10,
+        _ => 0,
+    }
+}
+
+fn word_path_score(path: &str) -> i32 {
+    match word_result_path_rank(path) {
+        0 => 20,
+        1 => 16,
+        2 => 14,
+        3 => 8,
+        4 => 0,
+        5 => -40,
+        6 => -30,
+        _ => 0,
+    }
+}
+
+fn is_import_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("import ")
+        || trimmed.starts_with("import type ")
+        || trimmed.starts_with("use ")
+        || trimmed.starts_with("from ")
+}
+
+fn is_export_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("export ")
+}
+
+fn is_call_like_occurrence(word: &str, line: &str) -> bool {
+    let patterns = [
+        format!("{word}("),
+        format!("new {word}("),
+        format!("{word}::"),
+        format!(".{word}("),
+    ];
+    patterns.iter().any(|pattern| line.contains(pattern))
+}
+
+fn is_doc_path(path: &str) -> bool {
+    path.starts_with("docs/")
+        || path.eq_ignore_ascii_case("readme.md")
+        || path.ends_with(".md")
+        || path.ends_with(".mdx")
 }
 
 pub fn is_comment_or_blank(line: &str, language: Language) -> bool {

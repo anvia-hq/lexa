@@ -35,7 +35,7 @@ fn recent_task(project: &Path) -> BenchResult {
         "src/recent.rs",
         "pub fn recently_added() -> usize { 7 }\n",
     );
-    let args = ["--json", "recent", "--limit", "5"];
+    let args = ["recent", "--limit", "5"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -56,7 +56,7 @@ fn recent_task(project: &Path) -> BenchResult {
 }
 
 fn status_task(project: &Path) -> BenchResult {
-    let args = ["--json", "status"];
+    let args = ["status"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -81,9 +81,10 @@ fn reindex_task(project: &Path) -> BenchResult {
         "pub fn reindexed_symbol() -> usize { 9 }\n",
     );
     let measured = run_lexa(project, &["reindex", "."]);
-    let symbol = run_lexa(project, &["--json", "symbol-defs", "reindexed_symbol"]);
+    let symbol = run_lexa(project, &["symbol-defs", "reindexed_symbol"]);
+    let reindex_json = parse_json(&measured.stdout);
     let symbol_json = parse_json(&symbol.stdout);
-    let correct = measured.stdout.contains("Indexed")
+    let correct = reindex_json["files_indexed"].as_u64().unwrap() >= 1
         && symbol_json["results"]
             .as_array()
             .unwrap()
@@ -102,7 +103,6 @@ fn reindex_task(project: &Path) -> BenchResult {
 
 fn audit_task(project: &Path) -> BenchResult {
     let args = [
-        "--json",
         "audit",
         "--config",
         "lexa.toml",
@@ -137,8 +137,8 @@ fn audit_task(project: &Path) -> BenchResult {
 
 fn clear_index_task(project: &Path) -> BenchResult {
     let measured = run_lexa(project, &["clear-index"]);
-    let correct =
-        measured.stdout.contains("Removed graph") && !project.join(".lexa/graph.lexa").exists();
+    let json = parse_json(&measured.stdout);
+    let correct = json["removed"] == true && !project.join(".lexa/graph.lexa").exists();
     bench_result_against(
         SUITE,
         "clear persisted graph",

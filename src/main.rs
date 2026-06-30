@@ -2,8 +2,11 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
-use lexa::engine::{self, ContextOptions, FileFilterOptions, SearchOptions};
-use lexa::output::{format_unix_ms_utc, rich_results_json};
+use lexa::engine::{self, ContextOptions, FileFilterOptions, SearchOptions, WordSearchOptions};
+use lexa::output::{
+    agent_toon, format_unix_ms_utc, rich_results_json, word_result_kind_facets,
+    word_result_path_facets,
+};
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
 use lexa::{audit, edit, freshness, mcp, pipeline, snapshot, store};
 use serde_json::json;
@@ -39,7 +42,7 @@ struct Cli {
     #[arg(long = "no-graph", global = true)]
     no_graph: bool,
 
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     json: bool,
 }
 
@@ -158,6 +161,24 @@ enum Commands {
     #[command(name = "word-refs")]
     WordRefs {
         word: String,
+
+        #[arg(short, long)]
+        max: Option<usize>,
+
+        #[arg(long)]
+        max_results: Option<usize>,
+
+        #[arg(long, default_value = "0")]
+        cursor: usize,
+
+        #[arg(long)]
+        path_prefix: Option<String>,
+
+        #[arg(long = "path")]
+        path: Option<String>,
+
+        #[arg(long)]
+        path_glob: Option<String>,
     },
 
     #[command(name = "trace-deps")]
@@ -358,7 +379,7 @@ enum Commands {
         #[arg(long, default_value = "500")]
         debounce: u64,
 
-        #[arg(long = "structured-content", alias = "json-output")]
+        #[arg(long = "structured-content", alias = "json-output", hide = true)]
         structured_content: bool,
 
         #[arg(long = "log-file")]
@@ -379,10 +400,13 @@ fn main() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
+    reject_removed_output_flags();
+
+    let mut cli = Cli::parse();
+    cli.json = true;
 
     if cli.version {
-        return cli_upgrade::cmd_version(cli.json);
+        return cli_upgrade::cmd_version(false);
     }
 
     let Some(command) = &cli.command else {
@@ -468,7 +492,22 @@ fn main() -> Result<()> {
             max_limit(*max, *max_results, 20)?,
             &cli,
         ),
-        Commands::WordRefs { word } => cmd_word(word, &cli),
+        Commands::WordRefs {
+            word,
+            max,
+            max_results,
+            cursor,
+            path_prefix,
+            path,
+            path_glob,
+        } => cmd_word(
+            word,
+            max_limit(*max, *max_results, 50)?,
+            *cursor,
+            path_prefix.as_deref().or(path.as_deref()),
+            path_glob.as_deref(),
+            &cli,
+        ),
         Commands::Deps {
             path,
             reverse,
@@ -588,23 +627,16 @@ fn main() -> Result<()> {
         Commands::Upgrade {
             version,
             install_dir,
-        } => cli_upgrade::cmd_upgrade(version, install_dir.as_ref(), cli.json),
+        } => cli_upgrade::cmd_upgrade(version, install_dir.as_ref(), false),
         Commands::Watch { path, debounce } => cmd_watch(path, *debounce, &cli),
         Commands::Pipeline { pipeline } => cmd_pipeline(pipeline, &cli),
         Commands::Mcp {
             path,
             no_refresh,
             debounce,
-            structured_content,
+            structured_content: _,
             log_file,
-        } => cmd_mcp(
-            path,
-            *no_refresh,
-            *debounce,
-            *structured_content,
-            log_file.as_ref(),
-            &cli,
-        ),
+        } => cmd_mcp(path, *no_refresh, *debounce, log_file.as_ref(), &cli),
         Commands::DumpTools => cmd_dump_tools(),
     }
 }
@@ -616,6 +648,29 @@ fn cmd_dump_tools() -> Result<()> {
     use std::io::Write as _;
     writeln!(handle)?;
     Ok(())
+}
+
+fn reject_removed_output_flags() {
+    if let Some(flag) = removed_output_flag(std::env::args().skip(1)) {
+        eprintln!("{flag} was removed; Lexa command results are always TOON structured text.");
+        std::process::exit(2);
+    }
+}
+
+fn removed_output_flag(args: impl IntoIterator<Item = impl AsRef<str>>) -> Option<&'static str> {
+    for arg in args {
+        let arg = arg.as_ref();
+        match arg {
+            "--json" => return Some("--json"),
+            "--structured-content" => return Some("--structured-content"),
+            "--json-output" => return Some("--json-output"),
+            _ if arg.starts_with("--json=") => return Some("--json"),
+            _ if arg.starts_with("--structured-content=") => return Some("--structured-content"),
+            _ if arg.starts_with("--json-output=") => return Some("--json-output"),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn current_root() -> Result<PathBuf> {
@@ -781,7 +836,7 @@ fn cmd_index(root: &PathBuf, output: Option<&PathBuf>, cli: &Cli) -> Result<()> 
         if !cli.no_graph {
             snapshot::write_snapshot(&engine, &snap_path)?;
         }
-        return print_json(json!({
+        return print_agent_result(json!({
             "root": root.display().to_string(),
             "files_indexed": count,
             "symbols_indexed": engine.symbol_index_count(),
@@ -836,7 +891,7 @@ fn cmd_clear_index(cli: &Cli) -> Result<()> {
     }
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "graph": snap_path.display().to_string(),
             "removed": existed,
         }));
@@ -854,7 +909,6 @@ fn cmd_mcp(
     path: &PathBuf,
     no_refresh: bool,
     debounce_ms: u64,
-    structured_content: bool,
     log_file: Option<&PathBuf>,
     cli: &Cli,
 ) -> Result<()> {
@@ -880,15 +934,13 @@ fn cmd_mcp(
     };
     let snap_path = graph_path_for_root(&root, cli);
     let mut engine = engine::Engine::new(16384);
-    let include_structured_content = structured_content || cli.json;
     diagnostics.info(format!(
-        "root={} graph={} persist_graph={} refresh={} watcher={} structured_content={}",
+        "root={} graph={} persist_graph={} refresh={} watcher={} output=toon",
         root.display(),
         snap_path.display(),
         !cli.no_graph,
         !no_refresh,
-        !no_refresh,
-        include_structured_content
+        !no_refresh
     ));
 
     if !cli.no_graph && snap_path.exists() {
@@ -957,14 +1009,7 @@ fn cmd_mcp(
         }
     }
 
-    let mut server = mcp::McpServer::new(
-        engine,
-        root,
-        snap_path,
-        !cli.no_graph,
-        include_structured_content,
-        diagnostics,
-    );
+    let mut server = mcp::McpServer::new(engine, root, snap_path, !cli.no_graph, diagnostics);
     if !no_refresh {
         server.enable_watcher(debounce_ms)?;
     }
@@ -995,7 +1040,7 @@ fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Result<()> {
     };
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "query": query,
             "count": results.len(),
             "limit": options.max_results,
@@ -1046,7 +1091,7 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
         Ok(path) => path,
         Err(_) if !project_target_path(&root, path).exists() => {
             if cli.json {
-                return print_json(json!({
+                return print_agent_result(json!({
                     "error": "file_not_found",
                     "path": path,
                     "available": engine.list_dir("").into_iter().take(20).map(|(name, _)| name).collect::<Vec<_>>(),
@@ -1066,7 +1111,7 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
         Some(outline) => {
             let unresolved_imports = engine.get_unresolved_imports(&path);
             if cli.json {
-                return print_json(json!({
+                return print_agent_result(json!({
                     "path": path,
                     "language": outline.language.as_str(),
                     "line_count": outline.line_count,
@@ -1128,7 +1173,7 @@ fn cmd_outline(path: &str, cli: &Cli) -> Result<()> {
         }
         None => {
             if cli.json {
-                return print_json(json!({
+                return print_agent_result(json!({
                     "error": "file_not_found",
                     "path": path,
                     "available": engine.list_dir("").into_iter().take(20).map(|(name, _)| name).collect::<Vec<_>>(),
@@ -1150,7 +1195,7 @@ fn cmd_symbol_search(query: &str, max: usize, cli: &Cli) -> Result<()> {
     let results = engine.fuzzy_symbols(query, max);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "query": query,
             "count": results.len(),
             "limit": max,
@@ -1191,7 +1236,9 @@ fn cmd_symbol(name: &str, cli: &Cli) -> Result<()> {
     let results = engine.find_symbol(name);
 
     if cli.json {
-        return print_json(json!({"name": name, "count": results.len(), "results": results}));
+        return print_agent_result(
+            json!({"name": name, "count": results.len(), "results": results}),
+        );
     }
 
     if results.is_empty() {
@@ -1221,25 +1268,65 @@ fn cmd_symbol(name: &str, cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_word(word: &str, cli: &Cli) -> Result<()> {
+fn cmd_word(
+    word: &str,
+    limit: usize,
+    cursor: usize,
+    path_prefix: Option<&str>,
+    path_glob: Option<&str>,
+    cli: &Cli,
+) -> Result<()> {
     let engine = load_engine(cli)?;
-    let results = engine.search_word(word);
+    let options = WordSearchOptions {
+        path_prefix: path_prefix.map(ToString::to_string),
+        path_glob: path_glob.map(ToString::to_string),
+    };
+    let all_results = engine.search_word_with_options(word, &options);
+    let total = all_results.len();
+    let start = cursor.min(total);
+    let end = start.saturating_add(limit).min(total);
+    let results = all_results[start..end].to_vec();
+    let next_cursor = (end < total).then_some(end);
 
     if cli.json {
-        return print_json(json!({"word": word, "count": results.len(), "results": results}));
+        return print_agent_result(json!({
+            "word": word,
+            "count": results.len(),
+            "total": total,
+            "limit": limit,
+            "cursor": start,
+            "truncated": next_cursor.is_some(),
+            "next_cursor": next_cursor,
+            "filters": {
+                "path_prefix": options.path_prefix,
+                "path_glob": options.path_glob,
+            },
+            "facets": word_result_path_facets(&all_results),
+            "kind_facets": word_result_kind_facets(&all_results),
+            "results": results,
+        }));
     }
 
-    if results.is_empty() {
+    if all_results.is_empty() {
         println!("No occurrences of '{}'", word);
         return Ok(());
     }
 
-    println!("{} occurrence(s) of '{}':", results.len(), word);
+    println!(
+        "{} occurrence(s) of '{}' (showing {} from cursor {}):",
+        total,
+        word,
+        results.len(),
+        start
+    );
     for result in &results {
         println!(
             "  {}:{}: {}",
             result.path, result.line_num, result.line_text
         );
+    }
+    if let Some(next_cursor) = next_cursor {
+        println!("Next: lexa word-refs {word} --cursor {next_cursor}");
     }
 
     Ok(())
@@ -1250,7 +1337,7 @@ fn cmd_find(pattern: &str, max: usize, cli: &Cli) -> Result<()> {
     let results = engine.fuzzy_find(pattern, max);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "query": pattern,
             "count": results.len(),
             "limit": max,
@@ -1279,7 +1366,7 @@ fn cmd_tree(filters: FileFilterOptions, cli: &Cli) -> Result<()> {
     let (files, total, truncated) = engine.filtered_files(&filters);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "count": files.len(),
             "total": total,
             "truncated": truncated,
@@ -1349,7 +1436,7 @@ fn cmd_deps(path: &str, reverse: bool, transitive: bool, cli: &Cli) -> Result<()
     let transitive_label = if transitive { " (transitive)" } else { "" };
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "path": path,
             "direction": if reverse { "imported_by" } else { "depends_on" },
             "transitive": transitive,
@@ -1386,7 +1473,7 @@ fn cmd_hot(limit: usize, cli: &Cli) -> Result<()> {
     let files = engine.get_hot_files(limit);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "count": files.len(),
             "limit": limit,
             "files": files.into_iter().map(|(path, meta)| json!({
@@ -1424,7 +1511,7 @@ fn cmd_callers(name: &str, max: usize, cli: &Cli) -> Result<()> {
     let results = engine.find_callers(name, max);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "name": name,
             "count": results.len(),
             "limit": max,
@@ -1452,7 +1539,7 @@ fn cmd_context(task: &str, options: ContextOptions, cli: &Cli) -> Result<()> {
     let engine = load_engine(cli)?;
     let details = engine.build_context_details_with_options(task, &options);
     if cli.json {
-        return print_json(json!(details));
+        return print_agent_result(json!(details));
     }
     let context = engine.build_context_with_options(task, &options);
     println!("{}", context);
@@ -1464,7 +1551,7 @@ fn cmd_changes(since: u64, cli: &Cli) -> Result<()> {
     let changes = engine.get_changes(since);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "since": since,
             "count": changes.len(),
             "change_history_persisted": false,
@@ -1510,7 +1597,7 @@ fn cmd_read(
     match engine.read_file_rich(&path, line_start, line_end, compact, if_hash) {
         Some(result) => {
             if cli.json {
-                return print_json(json!({
+                return print_agent_result(json!({
                     "path": path,
                     "hash": format!("{:x}", result.hash),
                     "unchanged": result.unchanged,
@@ -1531,7 +1618,7 @@ fn cmd_read(
         }
         None => {
             if cli.json {
-                return print_json(json!({"error": "file_not_found", "path": path}));
+                return print_agent_result(json!({"error": "file_not_found", "path": path}));
             }
             println!("File not found: {}", path);
         }
@@ -1598,7 +1685,7 @@ fn cmd_edit(
 
     if dry_run {
         if cli.json {
-            return print_json(json!({
+            return print_agent_result(json!({
                 "path": rel_path,
                 "op": op_label,
                 "dry_run": true,
@@ -1630,7 +1717,7 @@ fn cmd_edit(
             snapshot::write_snapshot(&engine, &snap_path)?;
         }
         if cli.json {
-            return print_json(json!({
+            return print_agent_result(json!({
                 "path": rel_path,
                 "op": op_label,
                 "dry_run": false,
@@ -1653,7 +1740,7 @@ fn cmd_edit(
         }
     } else {
         if cli.json {
-            return print_json(json!({
+            return print_agent_result(json!({
                 "path": rel_path,
                 "op": op_label,
                 "dry_run": false,
@@ -1699,6 +1786,7 @@ fn cmd_create(
         overwrite,
         dry_run,
     };
+    let would_create = dry_run && !request.path.exists();
     let result = edit::create_file(&request)?;
 
     if !dry_run {
@@ -1715,7 +1803,7 @@ fn cmd_create(
     }
 
     if cli.json {
-        return print_json(json!({
+        let mut payload = json!({
             "path": rel_path,
             "op": "create",
             "dry_run": dry_run,
@@ -1723,7 +1811,11 @@ fn cmd_create(
             "hash": format!("{:x}", result.hash),
             "line_count": result.line_count,
             "byte_size": result.byte_size,
-        }));
+        });
+        if would_create {
+            payload["would_create"] = json!(true);
+        }
+        return print_agent_result(payload);
     }
 
     if dry_run {
@@ -1797,7 +1889,7 @@ fn cmd_glob(pattern: &str, cli: &Cli) -> Result<()> {
     let results = engine.glob_files(pattern);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "pattern": pattern,
             "count": results.len(),
             "paths": results,
@@ -1821,7 +1913,7 @@ fn cmd_ls(path: &str, cli: &Cli) -> Result<()> {
     let entries = engine.list_dir(path);
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "path": path,
             "count": entries.len(),
             "entries": entries.into_iter().map(|(name, meta)| {
@@ -1881,7 +1973,7 @@ fn cmd_status(cli: &Cli) -> Result<()> {
     };
 
     if cli.json {
-        return print_json(json!({
+        return print_agent_result(json!({
             "files_indexed": engine.file_count(),
             "symbols_indexed": engine.symbol_index_count(),
             "unique_words_indexed": engine.word_index_count(),
@@ -1956,7 +2048,7 @@ fn cmd_audit(
     );
 
     if cli.json {
-        print_json(json!(report))?;
+        print_agent_result(json!(report))?;
     } else {
         print!("{}", audit::render_audit_report(&report));
     }
@@ -2094,15 +2186,66 @@ fn cmd_pipeline(pipeline: &[String], cli: &Cli) -> Result<()> {
     let output = pipeline::run_output(&engine, &pipeline_str);
     let text = output.render();
     if cli.json {
-        return print_json(output.to_json(&pipeline_str));
+        return print_agent_result(output.to_json(&pipeline_str));
     }
     println!("{}", text);
     Ok(())
 }
 
-fn print_json(value: serde_json::Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(&value)?);
+fn print_agent_result(value: serde_json::Value) -> Result<()> {
+    println!("{}", agent_toon(&current_command_tool(), value)?);
     Ok(())
+}
+
+fn current_command_tool() -> String {
+    let command_names = [
+        ("index", "index"),
+        ("reindex", "reindex"),
+        ("clear-index", "clear_index"),
+        ("files", "files"),
+        ("list", "list"),
+        ("path-search", "path_search"),
+        ("text-search", "text_search"),
+        ("outline", "outline"),
+        ("symbol-defs", "symbol_defs"),
+        ("symbol-search", "symbol_search"),
+        ("word-refs", "word_refs"),
+        ("trace-deps", "trace_deps"),
+        ("recent", "recent"),
+        ("callers", "callers"),
+        ("brief", "brief"),
+        ("changes", "changes"),
+        ("read", "read"),
+        ("patch", "patch"),
+        ("create", "create"),
+        ("glob", "glob"),
+        ("status", "status"),
+        ("audit", "audit"),
+        ("pipeline", "pipeline"),
+        ("mcp", "mcp"),
+        ("upgrade", "upgrade"),
+        ("update", "upgrade"),
+    ];
+
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--graph" {
+            let _ = args.next();
+            continue;
+        }
+        if arg == "--no-graph"
+            || arg == "--version"
+            || arg.starts_with("--graph=")
+            || arg.starts_with('-')
+        {
+            continue;
+        }
+        if let Some((_, tool)) = command_names.iter().find(|(command, _)| *command == arg) {
+            return (*tool).to_string();
+        }
+    }
+
+    "result".to_string()
 }
 
 fn edit_op_str(op: edit::EditOp) -> &'static str {
@@ -2181,16 +2324,9 @@ mod tests {
     }
 
     #[test]
-    fn mcp_accepts_structured_content_flag_and_json_output_alias() {
-        for flag in ["--structured-content", "--json-output"] {
-            let cli = Cli::try_parse_from(["lexa", "mcp", ".", flag]).unwrap();
-
-            match cli.command {
-                Some(Commands::Mcp {
-                    structured_content, ..
-                }) => assert!(structured_content),
-                _ => panic!("expected mcp command"),
-            }
+    fn removed_output_flags_are_detected_before_clap_parse() {
+        for flag in ["--json", "--structured-content", "--json-output"] {
+            assert_eq!(removed_output_flag(["lexa", "mcp", ".", flag]), Some(flag));
         }
     }
 
@@ -2208,16 +2344,16 @@ mod tests {
     }
 
     #[test]
-    fn mcp_accepts_global_json_flag_as_structured_content_opt_in() {
-        let cli = Cli::try_parse_from(["lexa", "mcp", ".", "--json"]).unwrap();
-
-        assert!(cli.json);
-        match cli.command {
-            Some(Commands::Mcp {
-                structured_content, ..
-            }) => assert!(!structured_content),
-            _ => panic!("expected mcp command"),
-        }
+    fn removed_output_flag_detects_equals_forms() {
+        assert_eq!(removed_output_flag(["lexa", "--json=true"]), Some("--json"));
+        assert_eq!(
+            removed_output_flag(["lexa", "mcp", ".", "--structured-content=true"]),
+            Some("--structured-content")
+        );
+        assert_eq!(
+            removed_output_flag(["lexa", "mcp", ".", "--json-output=true"]),
+            Some("--json-output")
+        );
     }
 
     #[test]
