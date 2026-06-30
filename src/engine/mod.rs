@@ -899,32 +899,36 @@ impl Engine {
     ) -> ContextDetails {
         let keywords = context_keywords(task);
         let max_results = options.max_results.max(1);
-        let relevant_symbols = self.ranked_context_symbols(&keywords, options, 5);
+        let allow_test_context = context_allows_test_context(task, options);
+        let relevant_symbols =
+            self.ranked_context_symbols(&keywords, options, 5, allow_test_context);
 
-        let mut snippets =
-            self.ranked_context_snippets(&keywords, &relevant_symbols, options, max_results);
-        let explicit_query = context_query_is_explicit(task);
+        let mut snippets = self.ranked_context_snippets(
+            &keywords,
+            &relevant_symbols,
+            options,
+            max_results,
+            allow_test_context,
+        );
+        let confidence = context_confidence(task, &relevant_symbols, &snippets);
+        let low_confidence = confidence == "low";
 
         ContextDetails {
             task: task.to_string(),
             keywords,
             max_results,
-            confidence: if explicit_query {
-                "medium".to_string()
-            } else {
-                "low".to_string()
-            },
-            note: (!explicit_query).then(|| {
+            confidence: confidence.to_string(),
+            note: low_confidence.then(|| {
                 "Low-confidence brief: this tool bundles context from explicit symbols, path fragments, and scoped keywords; it is not natural-language QA.".to_string()
             }),
-            suggested_next_steps: if explicit_query {
-                Vec::new()
-            } else {
+            suggested_next_steps: if low_confidence {
                 vec![
                     "Add --path-prefix or --path-glob to scope the search.".to_string(),
                     "Run symbol-search for likely symbol names.".to_string(),
                     "Run text-search for concrete terms from the task.".to_string(),
                 ]
+            } else {
+                Vec::new()
             },
             relevant_symbols,
             snippets: std::mem::take(&mut snippets),
@@ -936,6 +940,7 @@ impl Engine {
         keywords: &[String],
         options: &ContextOptions,
         max_symbols: usize,
+        allow_test_context: bool,
     ) -> Vec<ContextSymbol> {
         let mut scored: Vec<ScoredContextSymbol> = Vec::new();
         let mut seen: HashSet<(String, String, SymbolKind, u32)> = HashSet::new();
@@ -948,7 +953,7 @@ impl Engine {
                 push_context_symbol_candidate(
                     &mut scored,
                     &mut seen,
-                    self.context_symbol_score(keyword, &result, keywords)
+                    self.context_symbol_score(keyword, &result, keywords, allow_test_context)
                         + CONTEXT_INDEXED_SYMBOL_SOURCE_BONUS,
                     result,
                 );
@@ -972,6 +977,7 @@ impl Engine {
                                 symbol: symbol.clone(),
                             },
                             keywords,
+                            allow_test_context,
                         ) + CONTEXT_OUTLINE_SYMBOL_SOURCE_BONUS,
                         SymbolResult {
                             path: path.clone(),
@@ -1000,8 +1006,9 @@ impl Engine {
                         path: path.clone(),
                         symbol: symbol.clone(),
                     };
-                    let score = self.context_symbol_score(keyword, &result, keywords)
-                        + path_score.round() as i32;
+                    let score =
+                        self.context_symbol_score(keyword, &result, keywords, allow_test_context)
+                            + path_score.round() as i32;
                     if score < 80 {
                         continue;
                     }
@@ -1024,7 +1031,11 @@ impl Engine {
                         path: path.clone(),
                         symbol: symbol.clone(),
                     };
-                    let score = self.context_multi_term_symbol_score(&result, &core_terms);
+                    let score = self.context_multi_term_symbol_score(
+                        &result,
+                        &core_terms,
+                        allow_test_context,
+                    );
                     if score >= 260 {
                         push_context_symbol_candidate(&mut scored, &mut seen, score, result);
                     }
@@ -1032,9 +1043,13 @@ impl Engine {
             }
         }
 
+        suppress_test_context_symbols(&mut scored, allow_test_context);
         scored.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
+                .then_with(|| {
+                    context_path_rank(&a.result.path).cmp(&context_path_rank(&b.result.path))
+                })
                 .then_with(|| a.result.path.cmp(&b.result.path))
                 .then_with(|| a.result.symbol.line_start.cmp(&b.result.symbol.line_start))
                 .then_with(|| a.result.symbol.name.cmp(&b.result.symbol.name))
@@ -1074,6 +1089,7 @@ impl Engine {
         keyword: &str,
         result: &SymbolResult,
         keywords: &[String],
+        allow_test_context: bool,
     ) -> i32 {
         let symbol_name = &result.symbol.name;
         let symbol_norm = context_normalize(symbol_name);
@@ -1091,6 +1107,7 @@ impl Engine {
             SymbolKind::Function | SymbolKind::Method
         );
         let mut score = symbol_kind_context_score(result.symbol.kind);
+        score += context_path_score(&result.path, allow_test_context);
 
         if symbol_name == keyword {
             score += CONTEXT_EXACT_SYMBOL_BONUS;
@@ -1182,21 +1199,28 @@ impl Engine {
                 score += (symbol_core_matches as i32 * CONTEXT_SYMBOL_CORE_TERM_BONUS)
                     + (path_core_matches as i32 * CONTEXT_PATH_CORE_TERM_BONUS);
             }
+            score += context_action_term_score(&symbol_norm, &path_norm, callable, &core_terms);
         }
 
-        if is_test_like_path(&result.path) {
+        if is_test_like_path(&result.path) && !allow_test_context {
             score -= CONTEXT_TEST_PATH_PENALTY;
         }
 
         score
     }
 
-    fn context_multi_term_symbol_score(&self, result: &SymbolResult, terms: &[String]) -> i32 {
+    fn context_multi_term_symbol_score(
+        &self,
+        result: &SymbolResult,
+        terms: &[String],
+        allow_test_context: bool,
+    ) -> i32 {
         let symbol_norm = context_normalize(&result.symbol.name);
         let path_norm = context_normalize(&result.path);
         let mut matched_symbol_terms = 0;
         let mut matched_path_terms = 0;
         let mut score = symbol_kind_context_score(result.symbol.kind);
+        score += context_path_score(&result.path, allow_test_context);
 
         for term in terms {
             if symbol_norm.contains(term) {
@@ -1215,10 +1239,11 @@ impl Engine {
         if matched_symbol_terms + matched_path_terms < 2 {
             return 0;
         }
-        if matches!(
+        let is_callable = matches!(
             result.symbol.kind,
             SymbolKind::Function | SymbolKind::Method
-        ) {
+        );
+        if is_callable {
             score += CONTEXT_MULTI_TERM_CALLABLE_KIND_BONUS;
         }
         if symbol_norm.starts_with("create") || symbol_norm.starts_with("run") {
@@ -1227,7 +1252,8 @@ impl Engine {
         if symbol_norm.contains("runtime") {
             score += CONTEXT_MULTI_TERM_RUNTIME_BONUS;
         }
-        if is_test_like_path(&result.path) {
+        score += context_action_term_score(&symbol_norm, &path_norm, is_callable, terms);
+        if is_test_like_path(&result.path) && !allow_test_context {
             score -= CONTEXT_TEST_PATH_PENALTY;
         }
         score
@@ -1239,10 +1265,36 @@ impl Engine {
         relevant_symbols: &[ContextSymbol],
         options: &ContextOptions,
         max_results: usize,
+        allow_test_context: bool,
     ) -> Vec<SearchResult> {
         let mut scored: Vec<ScoredSearchResult> = Vec::new();
+        for (rank, symbol) in relevant_symbols.iter().enumerate() {
+            if !self.context_path_allowed(&symbol.path, options) {
+                continue;
+            }
+            if scored
+                .iter()
+                .any(|x| x.result.path == symbol.path && x.result.line_num == symbol.line_start)
+            {
+                continue;
+            }
+            let Some(line_text) = self.get_line(&symbol.path, symbol.line_start) else {
+                continue;
+            };
+            let rank_penalty = (rank as i32) * CONTEXT_SNIPPET_SYMBOL_RANK_STEP;
+            scored.push(ScoredSearchResult {
+                score: CONTEXT_SNIPPET_SYMBOL_DEFINITION_BONUS.saturating_sub(rank_penalty),
+                result: SearchResult {
+                    path: symbol.path.clone(),
+                    line_num: symbol.line_start,
+                    line_text,
+                },
+            });
+        }
+
         for keyword in keywords {
-            let results = self.search(keyword, 8);
+            let per_keyword_limit = if allow_test_context { 8 } else { 24 };
+            let results = self.search(keyword, per_keyword_limit);
             for result in results {
                 if !self.context_path_allowed(&result.path, options) {
                     continue;
@@ -1253,13 +1305,22 @@ impl Engine {
                 {
                     continue;
                 }
-                let score = self.context_snippet_score(keyword, &result, relevant_symbols);
+                let score = self.context_snippet_score(
+                    keyword,
+                    &result,
+                    relevant_symbols,
+                    allow_test_context,
+                );
                 scored.push(ScoredSearchResult { score, result });
             }
         }
+        suppress_test_context_snippets(&mut scored, allow_test_context);
         scored.sort_by(|a, b| {
             b.score
                 .cmp(&a.score)
+                .then_with(|| {
+                    context_path_rank(&a.result.path).cmp(&context_path_rank(&b.result.path))
+                })
                 .then_with(|| a.result.path.cmp(&b.result.path))
                 .then_with(|| a.result.line_num.cmp(&b.result.line_num))
         });
@@ -1304,11 +1365,22 @@ impl Engine {
         keyword: &str,
         result: &SearchResult,
         relevant_symbols: &[ContextSymbol],
+        allow_test_context: bool,
     ) -> i32 {
         let keyword_lower = keyword.to_lowercase();
         let path_lower = result.path.to_lowercase();
         let line_lower = result.line_text.to_lowercase();
         let mut score = 0;
+        if is_source_context_path(&result.path) {
+            score += CONTEXT_SNIPPET_SOURCE_PATH_BONUS;
+        } else if is_doc_path(&result.path) {
+            score -= CONTEXT_SNIPPET_DOC_PATH_PENALTY;
+        } else if is_example_context_path(&result.path) {
+            score -= CONTEXT_SNIPPET_EXAMPLE_PATH_PENALTY;
+        }
+        if is_test_like_path(&result.path) && !allow_test_context {
+            score -= CONTEXT_SNIPPET_TEST_PATH_PENALTY;
+        }
 
         if line_lower.contains(&keyword_lower) {
             score += CONTEXT_SNIPPET_LINE_MATCH_BONUS;
@@ -1329,6 +1401,12 @@ impl Engine {
         {
             score += CONTEXT_SNIPPET_RELEVANT_SYMBOL_BONUS;
         }
+        if relevant_symbols
+            .first()
+            .is_some_and(|symbol| symbol.path == result.path)
+        {
+            score += CONTEXT_SNIPPET_TOP_SYMBOL_FILE_BONUS;
+        }
 
         let language = self
             .file_meta
@@ -1337,6 +1415,9 @@ impl Engine {
             .unwrap_or_else(|| detect_language(&result.path));
         if is_comment_or_blank(&result.line_text, language) {
             score -= CONTEXT_SNIPPET_COMMENT_PENALTY;
+        }
+        if is_import_line(&result.line_text) {
+            score -= CONTEXT_SNIPPET_IMPORT_PENALTY;
         }
         if keyword.len() <= 3 {
             score -= CONTEXT_SNIPPET_SHORT_KEYWORD_PENALTY;
@@ -1781,6 +1862,28 @@ fn push_context_symbol_candidate(
     }
 }
 
+fn suppress_test_context_symbols(scored: &mut Vec<ScoredContextSymbol>, allow_test_context: bool) {
+    if allow_test_context
+        || !scored
+            .iter()
+            .any(|entry| !is_test_like_path(&entry.result.path))
+    {
+        return;
+    }
+    scored.retain(|entry| !is_test_like_path(&entry.result.path));
+}
+
+fn suppress_test_context_snippets(scored: &mut Vec<ScoredSearchResult>, allow_test_context: bool) {
+    if allow_test_context
+        || !scored
+            .iter()
+            .any(|entry| !is_test_like_path(&entry.result.path))
+    {
+        return;
+    }
+    scored.retain(|entry| !is_test_like_path(&entry.result.path));
+}
+
 fn context_keywords(task: &str) -> Vec<String> {
     let mut keywords = Vec::new();
     let mut seen = HashSet::new();
@@ -1807,6 +1910,12 @@ fn context_keywords(task: &str) -> Vec<String> {
         }
     }
 
+    for token in &tokens {
+        if is_context_content_token(token) {
+            add_context_keyword_variants(&mut keywords, &mut seen, token);
+        }
+    }
+
     if keywords.is_empty() {
         for token in &tokens {
             if context_normalize(token).len() >= 3 {
@@ -1825,6 +1934,67 @@ fn context_query_is_explicit(task: &str) -> bool {
                 || has_lower_to_upper_transition(&token)
                 || token.chars().any(|ch| ch.is_ascii_digit())
         })
+}
+
+fn context_confidence(
+    task: &str,
+    relevant_symbols: &[ContextSymbol],
+    snippets: &[SearchResult],
+) -> &'static str {
+    let has_source_symbol = relevant_symbols
+        .iter()
+        .any(|symbol| is_source_context_path(&symbol.path));
+    let has_source_snippet = snippets
+        .iter()
+        .any(|snippet| is_source_context_path(&snippet.path));
+
+    if context_query_is_explicit(task) && has_source_symbol {
+        "high"
+    } else if has_source_symbol || has_source_snippet {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn context_allows_test_context(task: &str, options: &ContextOptions) -> bool {
+    context_task_mentions_test_context(task)
+        || options
+            .path_prefix
+            .as_deref()
+            .is_some_and(context_filter_targets_test_context)
+        || options
+            .path_glob
+            .as_deref()
+            .is_some_and(context_filter_targets_test_context)
+}
+
+fn context_task_mentions_test_context(task: &str) -> bool {
+    context_tokens(task).into_iter().any(|token| {
+        matches!(
+            context_normalize(&token).as_str(),
+            "test" | "tests" | "testing" | "spec" | "specs"
+        )
+    })
+}
+
+fn context_filter_targets_test_context(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    let normalized = lowered.trim_matches('/');
+    is_test_like_path(normalized)
+        || normalized.split('/').any(|segment| {
+            let segment =
+                segment.trim_matches(|ch| matches!(ch, '*' | '?' | '[' | ']' | '{' | '}'));
+            matches!(
+                segment,
+                "test" | "tests" | "__tests__" | "spec" | "specs" | "__specs__"
+            )
+        })
+}
+
+fn is_context_content_token(token: &str) -> bool {
+    let normalized = context_normalize(token);
+    normalized.len() >= 3 && !is_low_signal_context_term(&normalized)
 }
 
 fn quoted_segments(text: &str) -> Vec<String> {
@@ -1998,29 +2168,63 @@ fn context_terms(keywords: &[String]) -> Vec<String> {
 fn context_core_terms(keywords: &[String]) -> Vec<String> {
     context_terms(keywords)
         .into_iter()
-        .filter(|term| {
-            (term.len() >= 4 || term == "run")
-                && !matches!(
-                    term.as_str(),
-                    "what"
-                        | "when"
-                        | "where"
-                        | "which"
-                        | "with"
-                        | "this"
-                        | "that"
-                        | "from"
-                        | "into"
-                        | "does"
-                        | "work"
-                        | "works"
-                        | "look"
-                        | "find"
-                        | "show"
-                        | "application"
-                )
-        })
+        .filter(|term| (term.len() >= 4 || term == "run") && !is_low_signal_context_term(term))
         .collect()
+}
+
+fn is_low_signal_context_term(term: &str) -> bool {
+    matches!(
+        term,
+        "what"
+            | "when"
+            | "where"
+            | "which"
+            | "with"
+            | "this"
+            | "that"
+            | "from"
+            | "into"
+            | "does"
+            | "work"
+            | "works"
+            | "look"
+            | "find"
+            | "show"
+            | "how"
+            | "why"
+            | "the"
+            | "and"
+            | "for"
+            | "application"
+    )
+}
+
+fn context_action_term_score(
+    symbol_norm: &str,
+    path_norm: &str,
+    callable: bool,
+    terms: &[String],
+) -> i32 {
+    let has_action_term = terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "create" | "build" | "make" | "use" | "run"));
+    if !has_action_term {
+        return 0;
+    }
+
+    if terms
+        .iter()
+        .filter(|term| matches!(term.as_str(), "create" | "build" | "make" | "use" | "run"))
+        .any(|term| symbol_norm.contains(term) || path_norm.contains(term))
+    {
+        if callable {
+            CONTEXT_ACTION_TERM_MATCH_BONUS
+        } else {
+            CONTEXT_ACTION_TERM_MATCH_BONUS / 2
+        }
+    } else {
+        -CONTEXT_MISSING_ACTION_TERM_PENALTY
+    }
 }
 
 fn context_normalize(value: &str) -> String {
@@ -2058,16 +2262,56 @@ fn symbol_kind_context_score(kind: SymbolKind) -> i32 {
 }
 
 fn is_test_like_path(path: &str) -> bool {
-    let file_name = path.rsplit('/').next().unwrap_or(path);
-    path.starts_with("test/")
-        || path.starts_with("tests/")
-        || path.starts_with("__tests__/")
-        || path.contains("/test/")
-        || path.contains("/tests/")
-        || path.contains("__tests__")
-        || file_name.ends_with("_test.rs")
+    let path = path.to_ascii_lowercase();
+    let file_name = path.rsplit('/').next().unwrap_or(&path);
+    path.split('/').any(|segment| {
+        matches!(
+            segment,
+            "test" | "tests" | "__tests__" | "spec" | "specs" | "__specs__"
+        )
+    }) || file_name.ends_with("_test.rs")
         || file_name.contains(".test.")
         || file_name.contains(".spec.")
+}
+
+fn is_source_context_path(path: &str) -> bool {
+    path.starts_with("src/")
+        || (path.starts_with("packages/") && path.contains("/src/"))
+        || (path.starts_with("apps/") && path.contains("/src/"))
+}
+
+fn is_example_context_path(path: &str) -> bool {
+    path.starts_with("examples/") || path.contains("/examples/")
+}
+
+fn context_path_score(path: &str, allow_test_context: bool) -> i32 {
+    if is_source_context_path(path) {
+        CONTEXT_SOURCE_PATH_BONUS
+    } else if is_doc_path(path) {
+        -CONTEXT_DOC_PATH_PENALTY
+    } else if is_example_context_path(path) {
+        -CONTEXT_EXAMPLE_PATH_PENALTY
+    } else if is_test_like_path(path) && !allow_test_context {
+        -CONTEXT_TEST_PATH_PENALTY
+    } else {
+        0
+    }
+}
+
+fn context_path_rank(path: &str) -> u8 {
+    if is_source_context_path(path) {
+        0
+    } else if is_test_like_path(path) {
+        4
+    } else if is_example_context_path(path) {
+        5
+    } else if is_doc_path(path) {
+        6
+    } else if path.starts_with("packages/") || path.starts_with("apps/") {
+        1
+    } else {
+        3
+    }
 }
 
 fn now_ms() -> u64 {
