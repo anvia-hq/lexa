@@ -1,0 +1,78 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro'
+import CodeBlock from '../components/CodeBlock.astro'
+
+const tools = [
+  ['files', 'Start with an indexed project overview.'],
+  ['list', 'List one directory.'],
+  ['glob', 'Match exact path globs.'],
+  ['path_search', 'Find approximate paths.'],
+  ['outline', 'Read imports and symbols before reading a file.'],
+  ['symbol_defs', 'Find exact symbol definitions.'],
+  ['symbol_search', 'Find approximate symbol names.'],
+  ['word_refs', 'Find exact identifier references.'],
+  ['text_search', 'Search indexed text by literal or regex.'],
+  ['callers', 'Find non-definition call sites.'],
+  ['brief', 'Compose task-focused context.'],
+  ['trace_deps', 'Trace import relationships.'],
+  ['read', 'Read content with optional ranges and hashes.'],
+  ['patch', 'Apply line edits with hash checks.'],
+  ['create', 'Create a file safely.'],
+  ['changes', 'Show session-local file changes.'],
+  ['recent', 'Show recently modified files.'],
+  ['status', 'Show index statistics.'],
+  ['reindex', 'Refresh the in-memory index.'],
+  ['clear_index', 'Drop the index and graph file.'],
+  ['audit', 'Run a static architecture audit.'],
+  ['pipeline', 'Chain Lexa operations into one query.'],
+]
+
+const mcpConfig = `{
+  "mcpServers": {
+    "lexa": {
+      "command": "lexa",
+      "args": ["mcp", "/path/to/project"]
+    }
+  }
+}`
+---
+
+<SiteLayout title="MCP - Lexa">
+  <p class="m-0 p-0">
+    Lexa can run as an MCP server over stdio. Agents call the same project graph through tool requests, and Lexa returns one structured text content block by default to avoid duplicated machine-readable envelopes.
+  </p>
+
+  <div class="mt-8">
+    <CodeBlock code="lexa mcp /path/to/project" />
+  </div>
+
+  <div class="mt-8">
+    <CodeBlock code={mcpConfig} lang="json" />
+  </div>
+
+  <p class="mt-8 p-0 text-stone-400">
+    Use the default text content as the agent-facing contract. Do not ask Lexa for alternate output modes or duplicated structured content.
+  </p>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <thead class="text-stone-500">
+        <tr>
+          <th class="pb-2 pr-6 font-normal">Tool</th>
+          <th class="pb-2 font-normal">Use</th>
+        </tr>
+      </thead>
+      <tbody>
+        {tools.map(([tool, use]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">
+              <code class="font-mono text-stone-200">{tool}</code>
+            </td>
+            <td class="py-0.5 align-top">{use}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+</SiteLayout>

@@ -1,0 +1,83 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro'
+import CodeBlock from '../components/CodeBlock.astro'
+
+const summary = [
+  ['Accuracy', '13/13'],
+  ['Lexa est. tokens', '2017'],
+  ['Baseline est. tokens', '8397'],
+  ['Aggregate reduction', '76.0%'],
+]
+
+const rows = [
+  ['filtered file overview', 'files', '123', '32', '-284.4%', 'true'],
+  ['directory children', 'list', '167', '52', '-221.2%', 'true'],
+  ['glob paths', 'glob', '52', '20', '-160.0%', 'true'],
+  ['fuzzy path', 'path_search', '34', '129', '73.6%', 'true'],
+  ['scoped text search', 'text_search', '200', '105', '-90.5%', 'true'],
+  ['exact word refs', 'word_refs', '364', '274', '-32.8%', 'true'],
+  ['exact definition', 'symbol_defs', '89', '1768', '95.0%', 'true'],
+  ['fuzzy symbol', 'symbol_search', '93', '1462', '93.6%', 'true'],
+  ['callers', 'callers', '339', '945', '64.1%', 'true'],
+  ['outline', 'outline', '117', '107', '-9.3%', 'true'],
+  ['dependencies', 'trace_deps', '54', '113', '52.2%', 'true'],
+  ['brief', 'brief', '243', '2445', '90.1%', 'true'],
+  ['composed query', 'pipeline', '142', '945', '85.0%', 'true'],
+]
+---
+
+<SiteLayout title="Benchmark - Lexa">
+  <p class="m-0 p-0">
+    Lexa includes deterministic agent retrieval benchmarks over a synthetic project with known ground truth. Token counts estimate the default structured-text CLI and MCP output against a baseline of file listing, grep-style search, and candidate file reads.
+  </p>
+
+  <div class="mt-8">
+    <CodeBlock code="cargo test --test agent_retrieval_benchmark -- --nocapture" />
+  </div>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <tbody>
+        {summary.map(([metric, value]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">{metric}</td>
+            <td class="py-0.5 align-top font-mono text-stone-200">{value}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <thead class="text-stone-500">
+        <tr>
+          <th class="pb-2 pr-6 font-normal">Task</th>
+          <th class="pb-2 pr-6 font-normal">Tool</th>
+          <th class="pb-2 pr-6 text-right font-normal">Lexa</th>
+          <th class="pb-2 pr-6 text-right font-normal">Baseline</th>
+          <th class="pb-2 pr-6 text-right font-normal">Reduction</th>
+          <th class="pb-2 text-right font-normal">Correct</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(([task, tool, lexa, baseline, reduction, correct]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">{task}</td>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">
+              <code class="font-mono text-stone-200">{tool}</code>
+            </td>
+            <td class="whitespace-nowrap py-0.5 pr-6 text-right align-top font-mono text-stone-300">{lexa}</td>
+            <td class="whitespace-nowrap py-0.5 pr-6 text-right align-top font-mono text-stone-300">{baseline}</td>
+            <td class="whitespace-nowrap py-0.5 pr-6 text-right align-top font-mono text-stone-300">{reduction}</td>
+            <td class="whitespace-nowrap py-0.5 text-right align-top font-mono text-stone-300">{correct}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="mt-8 p-0 text-stone-400">
+    Negative reductions mean that, for that narrow task, the indexed answer is more verbose than the minimal baseline. The aggregate result is the useful signal: retrieval stayed correct while the total estimated token load dropped by 76.0%.
+  </p>
+</SiteLayout>

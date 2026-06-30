@@ -1,0 +1,16 @@
+---
+import { codeToHtml } from 'shiki'
+
+type Props = {
+  code: string
+  lang?: string
+}
+
+const { code, lang = 'bash' } = Astro.props
+const html = await codeToHtml(code.trimEnd(), {
+  lang,
+  theme: 'vesper',
+})
+---
+
+<div class="code-frame" set:html={html} />

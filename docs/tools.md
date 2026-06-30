@@ -7,7 +7,7 @@
 
 **Summary:** Start here for an overview of the indexed project.
 
-**Description:** Use at the start of exploration to get an overview of the indexed project. Returns every indexed file with language, line count, byte size, symbol count, and modified time; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.
+**Description:** Use at the start of exploration to get an overview of the indexed project. Returns indexed files with language, line count, byte size, and symbol count; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.
 
 **Input schema:**
 
@@ -252,7 +252,7 @@
 
 **Summary:** Find every occurrence of an exact identifier.
 
-**Description:** Use when you want every occurrence of an exact identifier or word, including definitions and declarations. Acts like `grep -w` over the indexed word index. Use `word` (or alias `query`) as the exact token.
+**Description:** Use when you want occurrences of an exact identifier or word, including definitions, imports, calls, and references. Acts like `grep -w` over the indexed word index. Use `word` (or alias `query`) as the exact token. Results are classified, ranked, and paginated; pass `cursor` from `next_cursor` to continue. Supports `path_prefix`/`path` and `path_glob` filters.
 
 **Input schema:**
 
@@ -271,6 +271,27 @@
     }
   ],
   "properties": {
+    "cursor": {
+      "description": "Zero-based result offset for pagination.",
+      "type": "integer"
+    },
+    "max": {
+      "description": "Alias for max_results.",
+      "type": "integer"
+    },
+    "max_results": {
+      "type": "integer"
+    },
+    "path": {
+      "description": "Alias for path_prefix.",
+      "type": "string"
+    },
+    "path_glob": {
+      "type": "string"
+    },
+    "path_prefix": {
+      "type": "string"
+    },
     "query": {
       "description": "Alias for word.",
       "type": "string"
@@ -606,7 +627,7 @@
 
 **Summary:** List most-recently modified files.
 
-**Description:** Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, byte size, symbol count, and modified time. Default limit 10; helpful as a quick "what just changed" check.
+**Description:** Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, byte size, and symbol count. Default limit 10; helpful as a quick "what just changed" check.
 
 **Input schema:**
 

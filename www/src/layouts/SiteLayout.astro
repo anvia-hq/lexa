@@ -1,0 +1,63 @@
+---
+import '../styles/global.css'
+
+type Props = {
+  title?: string
+  description?: string
+}
+
+const {
+  title = 'Lexa',
+  description = 'Lexa indexes a repository into a compact local graph for agent-oriented code retrieval.',
+} = Astro.props
+
+const navItems = [
+  ['Guide', '/guide'],
+  ['MCP', '/mcp'],
+  ['Skill', '/skill'],
+  ['Benchmark', '/benchmark'],
+  ['Changelog', '/changelog'],
+]
+
+const pathname = Astro.url.pathname.replace(/\/$/, '') || '/'
+---
+
+<!doctype html>
+<html lang="en" class="bg-[#08090a]">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+    <link rel="icon" type="image/png" href="/brand/lexa-favicon-48.png" />
+  </head>
+  <body class="m-0 bg-[#08090a] p-0 font-sans text-base leading-[1.5] tracking-normal text-stone-300 antialiased">
+    <header class="mx-auto flex max-w-2xl items-center justify-between px-0 pt-8 text-sm">
+      <a class="block" href="/" aria-label="Lexa home">
+        <img class="block h-4 w-auto" src="/brand/logo-lexa.png" alt="Lexa" width="843" height="206" />
+      </a>
+      <nav aria-label="Primary navigation">
+        <ul class="flex items-center gap-5 text-stone-500">
+          {navItems.map(([label, href]) => {
+            const active = pathname === href
+            return (
+              <li>
+                <a class:list={['hover:text-stone-200', active && 'text-stone-200']} href={href}>
+                  {label}
+                </a>
+              </li>
+            )
+          })}
+        </ul>
+      </nav>
+    </header>
+
+    <main class="mx-auto mt-24 max-w-2xl px-0 pb-24 pt-0">
+      <slot />
+    </main>
+
+    <footer class="mx-auto max-w-2xl px-0 pb-8 text-sm text-stone-500">
+      made with <span class="inline-block text-[0.75em] leading-none align-[0.05em]">❤️</span> - indrazm
+    </footer>
+  </body>
+</html>

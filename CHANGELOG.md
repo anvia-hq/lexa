@@ -4,6 +4,18 @@
 
 ### Added
 
+- Added agent retrieval and CLI output format benchmark coverage.
+- Added the Astro and Tailwind website with Guide, MCP, Skill, Benchmark, and Changelog pages.
+
+### Changed
+
+- Improved agent-oriented TOON output and audit ranking.
+- Improved brief source ranking for more useful task context.
+
+## v0.8.0 - 2026-06-25
+
+### Added
+
 - Added a canonical MCP `TOOL_SPECS` table plus generated `skill/SKILL.md` and `docs/tools.md` workflows.
 - Added `xtask gen-skill` for regenerating MCP tool documentation from `TOOL_SPECS`.
 
@@ -11,11 +23,10 @@
 
 - `mcp::tools()` now consumes `TOOL_SPECS`, and MCP `tools/list` descriptions use short summaries.
 
-### Fixed
-
 ### Tests
 
 - Added invariant tests for MCP tool specs and generated tool-list shape.
+
 ## v0.7.0 - 2026-06-22
 
 ### Changed

@@ -1,0 +1,76 @@
+---
+import { codeToHtml } from 'shiki'
+import SiteLayout from '../layouts/SiteLayout.astro'
+
+const cliRows = [
+  ['Version', 'lexa --version'],
+  ['Index', 'lexa index .'],
+  ['Reindex', 'lexa reindex .'],
+  ['Clear index', 'lexa clear-index'],
+  ['Status', 'lexa status'],
+  ['Project overview', 'lexa files'],
+  ['Directory listing', 'lexa list <dir>'],
+  ['Exact path glob', 'lexa glob "src/**/*.rs"'],
+  ['Fuzzy path search', 'lexa path-search <query>'],
+  ['Recent files', 'lexa recent --limit 10'],
+  ['Task context', 'lexa brief "<task>" --path-prefix <scope>'],
+  ['File outline', 'lexa outline <path>'],
+  ['Read file', 'lexa read <path> -L 1-80 --compact --hash'],
+  ['Patch file', 'lexa patch <path> replace -L 12 --if-hash <hash> --dry-run'],
+  ['Create file', 'lexa create <path> --content "..." --dry-run'],
+  ['Changes', 'lexa changes 0'],
+  ['Text search', 'lexa text-search "<query>" --scope --compact'],
+  ['Word references', 'lexa word-refs <word>'],
+  ['Symbol search', 'lexa symbol-search <query> --max 10'],
+  ['Symbol definitions', 'lexa symbol-defs <ExactName>'],
+  ['Callers', 'lexa callers <name>'],
+  ['Dependency trace', 'lexa trace-deps <path> --transitive'],
+  ['Audit', 'lexa audit --max 25'],
+  ['Pipeline', 'lexa pipeline "glob src/**/*.rs | search main | limit 5"'],
+  ['Watch', 'lexa watch .'],
+  ['MCP server', 'lexa mcp .'],
+  ['Upgrade', 'lexa upgrade latest'],
+]
+
+const highlightedCliRows = await Promise.all(
+  cliRows.map(async ([need, command]) => {
+    const html = await codeToHtml(command, {
+      lang: 'bash',
+      theme: 'vesper',
+    })
+    const code = html.match(/<code>([\s\S]*?)<\/code>/)?.[1] ?? command
+    return [need, code]
+  }),
+)
+---
+
+<SiteLayout>
+  <p class="m-0 p-0">
+    Lexa indexes a repository into a compact local graph so an agent can find files, symbols, references, dependency paths, and task context without rereading the whole project.
+  </p>
+
+  <p class="m-0 p-0">
+    It is built for agent operation: structured text output, focused briefs, audit signals, hash-aware reads, and safe line patches. Lexa gives tools like Codex a fast map of the codebase while final verification stays with the project tests, typechecks, and builds.
+  </p>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <thead class="text-stone-500">
+        <tr>
+          <th class="pb-2 pr-6 font-normal">Need</th>
+          <th class="pb-2 font-normal">Command</th>
+        </tr>
+      </thead>
+      <tbody>
+        {highlightedCliRows.map(([need, command]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">{need}</td>
+            <td class="py-0.5 align-top">
+              <code class="command-code font-mono" set:html={command} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</SiteLayout>

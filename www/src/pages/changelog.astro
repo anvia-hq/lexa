@@ -1,0 +1,52 @@
+---
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { marked } from 'marked'
+import { codeToHtml } from 'shiki'
+import SiteLayout from '../layouts/SiteLayout.astro'
+
+const rawChangelog = readFileSync(resolve(process.cwd(), '../CHANGELOG.md'), 'utf8').trim()
+const tokens = marked.lexer(rawChangelog, { gfm: true })
+
+const normalizeLang = (lang?: string) => {
+  const value = lang?.split(/\s+/)[0]?.toLowerCase()
+  if (!value) return 'text'
+  if (value === 'shell' || value === 'sh') return 'bash'
+  return value
+}
+
+const codeTokens: Array<{ text: string; lang: string }> = []
+const collectCode = (items: any[]) => {
+  for (const item of items) {
+    if (item.type === 'code') {
+      codeTokens.push({ text: item.text, lang: normalizeLang(item.lang) })
+    }
+    if (Array.isArray(item.tokens)) collectCode(item.tokens)
+    if (Array.isArray(item.items)) collectCode(item.items)
+  }
+}
+
+collectCode(tokens)
+
+const highlightedBlocks = await Promise.all(
+  codeTokens.map((token) =>
+    codeToHtml(token.text.trimEnd(), {
+      lang: token.lang,
+      theme: 'vesper',
+    }),
+  ),
+)
+
+let codeBlockIndex = 0
+const renderer = new marked.Renderer()
+renderer.code = () => highlightedBlocks[codeBlockIndex++]
+
+const changelogHtml = marked.parse(rawChangelog, {
+  renderer,
+  gfm: true,
+}) as string
+---
+
+<SiteLayout title="Changelog - Lexa">
+  <article class="skill-doc" set:html={changelogHtml} />
+</SiteLayout>
