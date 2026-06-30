@@ -7,7 +7,7 @@
 
 **Summary:** Start here for an overview of the indexed project.
 
-**Description:** Use at the start of exploration to get an overview of the indexed project. Returns indexed files with language, line count, byte size, and symbol count; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.
+**Description:** Use at the start of exploration to get an overview of the indexed project. Returns indexed file paths with language, line count, and symbol count; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.
 
 **Input schema:**
 
@@ -48,7 +48,7 @@
 
 **Summary:** List immediate children of one directory.
 
-**Description:** Use when you need to see the immediate children of one directory, similar to `ls`. Returns files with their metadata (language, line count, symbols) and subdirectories as plain entries. Faster than `files` for inspecting a single folder.
+**Description:** Use when you need to see the immediate children of one directory, similar to `ls`. Returns each child name and whether it is a file or directory. Faster than `files` for inspecting a single folder.
 
 **Input schema:**
 
@@ -273,13 +273,16 @@
   "properties": {
     "cursor": {
       "description": "Zero-based result offset for pagination.",
+      "minimum": 0,
       "type": "integer"
     },
     "max": {
       "description": "Alias for max_results.",
+      "minimum": 1,
       "type": "integer"
     },
     "max_results": {
+      "minimum": 1,
       "type": "integer"
     },
     "path": {
@@ -627,7 +630,7 @@
 
 **Summary:** List most-recently modified files.
 
-**Description:** Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, byte size, and symbol count. Default limit 10; helpful as a quick "what just changed" check.
+**Description:** Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, and symbol count. Default limit 10; helpful as a quick "what just changed" check.
 
 **Input schema:**
 

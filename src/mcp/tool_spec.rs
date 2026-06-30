@@ -20,13 +20,13 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
         ToolSpec {
             name: "files",
             summary: "Start here for an overview of the indexed project.",
-            description: "Use at the start of exploration to get an overview of the indexed project. Returns indexed files with language, line count, byte size, and symbol count; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.",
+            description: "Use at the start of exploration to get an overview of the indexed project. Returns indexed file paths with language, line count, and symbol count; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.",
             input_schema: json!({"type":"object","properties":{"path":{"type":"string","description":"Optional project-relative path prefix."},"path_glob":{"type":"string"},"language":{"type":"string","description":"Language name such as typescript, rust, json, or markdown."},"min_lines":{"type":"integer"},"max_lines":{"type":"integer"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":[]}),
         },
         ToolSpec {
             name: "list",
             summary: "List immediate children of one directory.",
-            description: "Use when you need to see the immediate children of one directory, similar to `ls`. Returns files with their metadata (language, line count, symbols) and subdirectories as plain entries. Faster than `files` for inspecting a single folder.",
+            description: "Use when you need to see the immediate children of one directory, similar to `ls`. Returns each child name and whether it is a file or directory. Faster than `files` for inspecting a single folder.",
             input_schema: json!({"type":"object","properties":{"path":{"type":"string"}},"required":[]}),
         },
         ToolSpec {
@@ -63,7 +63,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "word_refs",
             summary: "Find every occurrence of an exact identifier.",
             description: "Use when you want occurrences of an exact identifier or word, including definitions, imports, calls, and references. Acts like `grep -w` over the indexed word index. Use `word` (or alias `query`) as the exact token. Results are classified, ranked, and paginated; pass `cursor` from `next_cursor` to continue. Supports `path_prefix`/`path` and `path_glob` filters.",
-            input_schema: json!({"type":"object","properties":{"word":{"type":"string"},"query":{"type":"string","description":"Alias for word."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."},"cursor":{"type":"integer","description":"Zero-based result offset for pagination."},"path_prefix":{"type":"string"},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"}},"anyOf":[{"required":["word"]},{"required":["query"]}],"required":[]}),
+            input_schema: json!({"type":"object","properties":{"word":{"type":"string"},"query":{"type":"string","description":"Alias for word."},"max_results":{"type":"integer","minimum":1},"max":{"type":"integer","minimum":1,"description":"Alias for max_results."},"cursor":{"type":"integer","minimum":0,"description":"Zero-based result offset for pagination."},"path_prefix":{"type":"string"},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"}},"anyOf":[{"required":["word"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "text_search",
@@ -116,7 +116,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
         ToolSpec {
             name: "recent",
             summary: "List most-recently modified files.",
-            description: "Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, byte size, and symbol count. Default limit 10; helpful as a quick \"what just changed\" check.",
+            description: "Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, and symbol count. Default limit 10; helpful as a quick \"what just changed\" check.",
             input_schema: json!({"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}),
         },
         ToolSpec {

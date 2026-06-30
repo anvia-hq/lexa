@@ -660,6 +660,9 @@ fn reject_removed_output_flags() {
 fn removed_output_flag(args: impl IntoIterator<Item = impl AsRef<str>>) -> Option<&'static str> {
     for arg in args {
         let arg = arg.as_ref();
+        if arg == "--" {
+            break;
+        }
         match arg {
             "--json" => return Some("--json"),
             "--structured-content" => return Some("--structured-content"),
@@ -1277,6 +1280,7 @@ fn cmd_word(
     cli: &Cli,
 ) -> Result<()> {
     let engine = load_engine(cli)?;
+    let limit = limit.max(1);
     let options = WordSearchOptions {
         path_prefix: path_prefix.map(ToString::to_string),
         path_glob: path_glob.map(ToString::to_string),
@@ -2353,6 +2357,18 @@ mod tests {
         assert_eq!(
             removed_output_flag(["lexa", "mcp", ".", "--json-output=true"]),
             Some("--json-output")
+        );
+    }
+
+    #[test]
+    fn removed_output_flag_respects_end_of_options_sentinel() {
+        assert_eq!(
+            removed_output_flag(["lexa", "pipeline", "--", "--json"]),
+            None
+        );
+        assert_eq!(
+            removed_output_flag(["lexa", "--json", "--", "--structured-content"]),
+            Some("--json")
         );
     }
 

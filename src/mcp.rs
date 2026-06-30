@@ -652,7 +652,8 @@ impl McpServer {
         let word = req_any_str(args, &["word", "query"])?;
         let limit = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
-            .unwrap_or(50);
+            .unwrap_or(50)
+            .max(1);
         let options = WordSearchOptions {
             path_prefix: opt_str(args, "path_prefix")
                 .or_else(|| opt_str(args, "path"))
@@ -1937,6 +1938,17 @@ mod tests {
             first_page.structured["filters"]["path_prefix"],
             "packages/core"
         );
+
+        let zero_limit = server
+            .tool_find_word(&json!({
+                "word": "Agent",
+                "path_prefix": "packages/core",
+                "max_results": 0
+            }))
+            .unwrap();
+        assert_eq!(zero_limit.structured["limit"], 1);
+        assert_eq!(zero_limit.structured["count"], 1);
+        assert_eq!(zero_limit.structured["next_cursor"], 1);
 
         let ranked = server
             .tool_find_word(&json!({
