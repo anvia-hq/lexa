@@ -1,0 +1,25 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro'
+import CopyCommand from '../components/CopyCommand.astro'
+
+const installCommands = [
+  ['Install globally for Codex', 'npx skills@latest add anvia-hq/lexa --agent codex --skill lexa -g'],
+  ['Preview the published skill', 'npx skills@latest add anvia-hq/lexa --list'],
+  ['List installed Codex skills', 'npx skills@latest list -g --agent codex'],
+  ['Update the Lexa skill', 'npx skills@latest update lexa -g'],
+]
+---
+
+<SiteLayout title="Skill - Lexa">
+  <p class="m-0 p-0 text-stone-300">
+    The Lexa skill gives Codex and other agents a compact operating guide for using Lexa as a local codebase intelligence layer: index the project, find focused context, inspect symbols, trace dependencies, audit structure, and make hash-aware line edits.
+  </p>
+
+  <p class="mt-5 p-0 text-stone-400">
+    Install it with the community <code class="font-mono text-stone-200">skills</code> CLI. The skill assumes the Lexa binary is already available; it teaches the agent how to operate Lexa properly inside a repository.
+  </p>
+
+  <div class="mt-8 space-y-3">
+    {installCommands.map(([label, command]) => <CopyCommand label={label} command={command} />)}
+  </div>
+</SiteLayout>

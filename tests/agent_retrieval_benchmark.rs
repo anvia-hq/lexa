@@ -41,7 +41,6 @@ fn agent_retrieval_benchmark_v2() {
 
 fn files_task(project: &Path) -> BenchResult {
     let args = [
-        "--json",
         "files",
         "src",
         "--language",
@@ -71,7 +70,7 @@ fn files_task(project: &Path) -> BenchResult {
 }
 
 fn list_task(project: &Path) -> BenchResult {
-    let args = ["--json", "list", "src"];
+    let args = ["list", "src"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -93,7 +92,7 @@ fn list_task(project: &Path) -> BenchResult {
 }
 
 fn glob_task(project: &Path) -> BenchResult {
-    let args = ["--json", "glob", "src/*.ts"];
+    let args = ["glob", "src/*.ts"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -115,7 +114,7 @@ fn glob_task(project: &Path) -> BenchResult {
 }
 
 fn path_search_task(project: &Path) -> BenchResult {
-    let args = ["--json", "path-search", "web_agent", "--max-results", "5"];
+    let args = ["path-search", "web_agent", "--max-results", "5"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -138,7 +137,6 @@ fn path_search_task(project: &Path) -> BenchResult {
 
 fn text_search_task(project: &Path) -> BenchResult {
     let args = [
-        "--json",
         "text-search",
         "create_project_agent",
         "--scope",
@@ -169,7 +167,7 @@ fn text_search_task(project: &Path) -> BenchResult {
 }
 
 fn word_refs_task(project: &Path) -> BenchResult {
-    let args = ["--json", "word-refs", "ProjectAgent"];
+    let args = ["word-refs", "ProjectAgent"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -191,14 +189,14 @@ fn word_refs_task(project: &Path) -> BenchResult {
 }
 
 fn exact_definition_task(project: &Path) -> BenchResult {
-    let args = ["--json", "symbol-defs", "Engine"];
+    let args = ["symbol-defs", "Engine"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
     let correct = json["results"].as_array().unwrap().iter().any(|result| {
         result["path"] == "src/engine.rs"
             && result["symbol"]["name"] == "Engine"
-            && result["symbol"]["kind"] == "StructDef"
+            && result["symbol"]["kind"] == "struct"
             && line_overlap(&result["symbol"], 3, 5)
     });
     let baseline = grep_like_with_candidate_reads(project, &["Engine"], None);
@@ -214,13 +212,7 @@ fn exact_definition_task(project: &Path) -> BenchResult {
 }
 
 fn fuzzy_symbol_task(project: &Path) -> BenchResult {
-    let args = [
-        "--json",
-        "symbol-search",
-        "build context",
-        "--max-results",
-        "5",
-    ];
+    let args = ["symbol-search", "build context", "--max-results", "5"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -240,13 +232,7 @@ fn fuzzy_symbol_task(project: &Path) -> BenchResult {
 }
 
 fn callers_task(project: &Path) -> BenchResult {
-    let args = [
-        "--json",
-        "callers",
-        "create_project_agent",
-        "--max-results",
-        "20",
-    ];
+    let args = ["callers", "create_project_agent", "--max-results", "20"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -286,7 +272,7 @@ fn callers_task(project: &Path) -> BenchResult {
 }
 
 fn outline_task(project: &Path) -> BenchResult {
-    let args = ["--json", "outline", "src/agent.rs"];
+    let args = ["outline", "src/agent.rs"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -294,10 +280,10 @@ fn outline_task(project: &Path) -> BenchResult {
     let imports = json["imports"].as_array().unwrap();
     let correct = symbols
         .iter()
-        .any(|symbol| symbol["name"] == "Agent" && symbol["kind"] == "StructDef")
+        .any(|symbol| symbol["name"] == "Agent" && symbol["kind"] == "struct")
         && symbols
             .iter()
-            .any(|symbol| symbol["name"] == "create_project_agent" && symbol["kind"] == "Function")
+            .any(|symbol| symbol["name"] == "create_project_agent" && symbol["kind"] == "function")
         && imports
             .iter()
             .any(|import| import.as_str().unwrap().contains("crate::engine::Engine"));
@@ -314,7 +300,7 @@ fn outline_task(project: &Path) -> BenchResult {
 }
 
 fn dependency_task(project: &Path) -> BenchResult {
-    let args = ["--json", "trace-deps", "src/app.ts"];
+    let args = ["trace-deps", "src/app.ts"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -343,13 +329,7 @@ fn dependency_task(project: &Path) -> BenchResult {
 }
 
 fn brief_task(project: &Path) -> BenchResult {
-    let args = [
-        "--json",
-        "brief",
-        "create project agent",
-        "--max-results",
-        "5",
-    ];
+    let args = ["brief", "create project agent", "--max-results", "5"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);
@@ -376,7 +356,6 @@ fn brief_task(project: &Path) -> BenchResult {
 
 fn pipeline_task(project: &Path) -> BenchResult {
     let args = [
-        "--json",
         "pipeline",
         "glob src/*.rs | search create_project_agent | limit 5",
     ];

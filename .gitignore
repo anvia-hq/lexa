@@ -1,5 +1,6 @@
 /target
 .lexa/
+.results/
 .DS_Store
 *.swp
 dist/

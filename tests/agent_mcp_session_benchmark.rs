@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::time::Duration;
 
 const SUITE: &str = "mcp_session";
 
@@ -19,6 +20,7 @@ fn agent_mcp_session_benchmark_v2() {
     let project = temp.path();
     write_fixture(project);
     run_lexa(project, &["index", "."]);
+    std::thread::sleep(Duration::from_millis(20));
 
     let mut session = McpSession::start(project);
     session.initialize();
@@ -46,10 +48,15 @@ fn mcp_patch_task(session: &mut McpSession, project: &Path) -> BenchResult {
         }),
     );
     let text = tool_text(&response);
+    let payload = tool_payload(&response);
     let content = std::fs::read_to_string(project.join("src/app.rs")).unwrap();
-    let correct = text.contains("patch applied to src/app.rs")
-        && text.contains("hash:")
-        && content.contains("session_patch_marker");
+    let correct = payload.as_ref().is_some_and(|payload| {
+        payload["tool"] == "patch"
+            && payload["path"] == "src/app.rs"
+            && payload["changed"] == true
+            && payload.get("hash").is_some()
+            && content.contains("session_patch_marker")
+    });
     bench_result_against(
         SUITE,
         "persistent patch",
@@ -70,8 +77,14 @@ fn mcp_create_task(session: &mut McpSession, project: &Path) -> BenchResult {
         }),
     );
     let text = tool_text(&response);
+    let payload = tool_payload(&response);
     let content = std::fs::read_to_string(project.join("src/session_created.rs")).unwrap();
-    let correct = text.contains("file created:") && content.contains("session_created");
+    let correct = payload.as_ref().is_some_and(|payload| {
+        payload["tool"] == "create"
+            && payload["path"] == "src/session_created.rs"
+            && payload["changed"] == true
+            && content.contains("session_created")
+    });
     bench_result_against(
         SUITE,
         "persistent create",
@@ -104,7 +117,12 @@ fn mcp_changes_task(session: &mut McpSession) -> BenchResult {
 fn mcp_recent_task(session: &mut McpSession) -> BenchResult {
     let response = session.call_tool("recent", json!({"limit": 5}));
     let text = tool_text(&response);
-    let correct = text.contains("src/session_created.rs");
+    let payload = parse_json(text);
+    let correct = payload["files"].as_array().is_some_and(|files| {
+        files
+            .iter()
+            .any(|file| file["path"] == "src/session_created.rs")
+    });
     bench_result_against(
         SUITE,
         "session recent state",
@@ -119,9 +137,12 @@ fn mcp_recent_task(session: &mut McpSession) -> BenchResult {
 fn mcp_status_task(session: &mut McpSession) -> BenchResult {
     let response = session.call_tool("status", json!({}));
     let text = tool_text(&response);
-    let correct = text.contains("seq:")
-        && text.contains("graph_exists: true")
-        && text.contains("change_history_persisted: false");
+    let payload = tool_payload(&response);
+    let correct = payload.as_ref().is_some_and(|payload| {
+        payload["seq"].as_u64().is_some_and(|seq| seq >= 2)
+            && payload["graph"]["exists"] == true
+            && payload["change_history_persisted"] == false
+    });
     bench_result_against(
         SUITE,
         "session status state",
@@ -136,6 +157,10 @@ fn mcp_status_task(session: &mut McpSession) -> BenchResult {
 fn tool_text(response: &Value) -> &str {
     assert_eq!(response["result"]["isError"], false, "{response}");
     response["result"]["content"][0]["text"].as_str().unwrap()
+}
+
+fn tool_payload(response: &Value) -> Option<Value> {
+    toon_format::decode_default(tool_text(response)).ok()
 }
 
 struct McpSession {

@@ -1,0 +1,130 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro'
+import CodeBlock from '../components/CodeBlock.astro'
+import Callout from '../components/Callout.astro'
+
+const commands = `cargo test --test agent_retrieval_benchmark -- --nocapture
+cargo test --test agent_cli_output_format_benchmark -- --nocapture
+cargo test --test agent_edit_safety_benchmark -- --nocapture
+cargo test --test agent_mcp_session_benchmark -- --nocapture
+cargo test --test agent_maintenance_benchmark -- --nocapture`
+
+const summary = [
+  ['Latest local run', 'June 30, 2026'],
+  ['Correctness checks', '34/34'],
+  ['Retrieval aggregate reduction', '80.0%'],
+  ['CLI output format', '1676 est. tokens across 13 commands'],
+]
+
+const suiteRows = [
+  ['retrieval', '13/13', '1678', '8397', '80.0%', 'Indexed answers against listing, grep, and candidate reads.'],
+  ['cli_output_format', '13 cases', '1676', 'n/a', 'n/a', 'Current structured-text CLI envelope across retrieval commands.'],
+  ['edit_safety', '11/11', '709', 'n/a', 'n/a', 'Hash-aware reads, dry runs, patches, creates, and rejection paths.'],
+  ['mcp_session', '5/5', '281', 'n/a', 'n/a', 'Persistent MCP session edits and state queries.'],
+  ['maintenance', '5/5', '611', 'n/a', 'n/a', 'Recent files, status, reindex, audit, and clear-index.'],
+]
+
+const retrievalRows = [
+  ['filtered file overview', 'files', '85', '32', '-165.6%', 'true'],
+  ['directory children', 'list', '102', '52', '-96.2%', 'true'],
+  ['glob paths', 'glob', '30', '20', '-50.0%', 'true'],
+  ['fuzzy path', 'path_search', '28', '129', '78.3%', 'true'],
+  ['scoped text search', 'text_search', '177', '105', '-68.6%', 'true'],
+  ['exact word refs', 'word_refs', '304', '274', '-10.9%', 'true'],
+  ['exact definition', 'symbol_defs', '48', '1768', '97.3%', 'true'],
+  ['fuzzy symbol', 'symbol_search', '86', '1462', '94.1%', 'true'],
+  ['callers', 'callers', '330', '945', '65.1%', 'true'],
+  ['outline', 'outline', '104', '107', '2.8%', 'true'],
+  ['dependencies', 'trace_deps', '32', '113', '71.7%', 'true'],
+  ['brief', 'brief', '220', '2445', '91.0%', 'true'],
+  ['composed query', 'pipeline', '132', '945', '86.0%', 'true'],
+]
+---
+
+<SiteLayout title="Benchmark - Lexa">
+  <p class="m-0 p-0">
+    Lexa includes deterministic agent tool-suite benchmarks over a synthetic project with known ground truth. Token counts estimate the default structured-text CLI and MCP output.
+  </p>
+
+  <div class="mt-8">
+    <CodeBlock code={commands} />
+  </div>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <tbody>
+        {summary.map(([metric, value]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">{metric}</td>
+            <td class="py-0.5 align-top font-mono text-stone-200">{value}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mt-8 space-y-5">
+    {suiteRows.map(([suite, checks, lexa, baseline, reduction, notes]) => (
+      <section class="border-l border-stone-800 pl-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <code class="font-mono text-sm text-stone-100">{suite}</code>
+          <span class="font-mono text-xs text-stone-500">{checks}</span>
+        </div>
+        <p class="mt-1 p-0 text-sm leading-[1.5] text-stone-400">{notes}</p>
+        <dl class="mt-3 grid grid-cols-3 gap-x-4 gap-y-2 text-sm">
+          <div>
+            <dt class="text-stone-600">Lexa</dt>
+            <dd class="m-0 font-mono text-stone-200">{lexa}</dd>
+          </div>
+          <div>
+            <dt class="text-stone-600">Baseline</dt>
+            <dd class:list={['m-0 font-mono', baseline === 'n/a' ? 'text-stone-500' : 'text-stone-200']}>{baseline}</dd>
+          </div>
+          <div>
+            <dt class="text-stone-600">Reduction</dt>
+            <dd class:list={['m-0 font-mono', reduction === 'n/a' ? 'text-stone-500' : 'text-stone-200']}>{reduction}</dd>
+          </div>
+        </dl>
+      </section>
+    ))}
+  </div>
+
+  <p class="mt-8 p-0 text-stone-400">
+    Retrieval is the suite with a full non-indexed baseline: recursive file listing, grep-style search, and candidate file reads. Safety and state suites report correctness and token envelope only.
+  </p>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <thead class="text-stone-500">
+        <tr>
+          <th class="pb-2 pr-6 font-normal">Task</th>
+          <th class="pb-2 pr-6 font-normal">Tool</th>
+          <th class="pb-2 pr-6 text-right font-normal">Lexa</th>
+          <th class="pb-2 pr-6 text-right font-normal">Baseline</th>
+          <th class="pb-2 pr-6 text-right font-normal">Reduction</th>
+          <th class="pb-2 text-right font-normal">Correct</th>
+        </tr>
+      </thead>
+      <tbody>
+        {retrievalRows.map(([task, tool, lexa, baseline, reduction, correct]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">{task}</td>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top">
+              <code class="font-mono text-stone-200">{tool}</code>
+            </td>
+            <td class="whitespace-nowrap py-0.5 pr-6 text-right align-top font-mono text-stone-300">{lexa}</td>
+            <td class="whitespace-nowrap py-0.5 pr-6 text-right align-top font-mono text-stone-300">{baseline}</td>
+            <td class="whitespace-nowrap py-0.5 pr-6 text-right align-top font-mono text-stone-300">{reduction}</td>
+            <td class="whitespace-nowrap py-0.5 text-right align-top font-mono text-stone-300">{correct}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mt-8">
+    <Callout>
+      Negative reductions mean that, for that narrow task, the indexed answer is more verbose than the minimal baseline. The aggregate result is the useful signal: retrieval stayed correct while the total estimated token load dropped by 80.0%.
+    </Callout>
+  </div>
+</SiteLayout>

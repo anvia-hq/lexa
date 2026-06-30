@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 - 2026-06-30
+
+### Added
+
+- Added agent retrieval and CLI output format benchmark coverage.
+- Added the Astro and Tailwind website with Guide, MCP, Skill, Benchmark, and Changelog pages.
+
+### Changed
+
+- Improved agent-oriented TOON output and audit ranking.
+- Improved brief source ranking for more useful task context.
+- Reduced structured text token overhead with flattened success metadata, shared path roots, direct path arrays, trimmed search text, conditional next steps, and triage-first audit output.
+- Refreshed the public benchmark docs and site page to cover retrieval, CLI output format, edit safety, MCP session, and maintenance suites.
+
+## v0.8.0 - 2026-06-25
 
 ### Added
 
@@ -11,11 +25,10 @@
 
 - `mcp::tools()` now consumes `TOOL_SPECS`, and MCP `tools/list` descriptions use short summaries.
 
-### Fixed
-
 ### Tests
 
 - Added invariant tests for MCP tool specs and generated tool-list shape.
+
 ## v0.7.0 - 2026-06-22
 
 ### Changed

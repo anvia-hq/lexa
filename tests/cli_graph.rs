@@ -1,9 +1,14 @@
 #![allow(clippy::unwrap_used)]
 
+use serde_json::Value;
 use std::process::Command;
 
 fn lexa() -> Command {
     Command::new(env!("CARGO_BIN_EXE_lexa"))
+}
+
+fn parse_toon_output(output: &[u8]) -> Value {
+    toon_format::decode_default(String::from_utf8_lossy(output).as_ref()).unwrap()
 }
 
 #[test]
@@ -196,7 +201,8 @@ fn cli_accepts_agent_friendly_aliases() {
         .output()
         .unwrap();
     assert!(read.status.success());
-    assert_eq!(String::from_utf8_lossy(&read.stdout), "fn two() {}");
+    let read_json = parse_toon_output(&read.stdout);
+    assert_eq!(read_json["content"], "fn two() {}");
 
     let search = lexa()
         .current_dir(project)
@@ -204,7 +210,8 @@ fn cli_accepts_agent_friendly_aliases() {
         .output()
         .unwrap();
     assert!(search.status.success());
-    assert!(String::from_utf8_lossy(&search.stdout).contains("1 results"));
+    let search_json = parse_toon_output(&search.stdout);
+    assert_eq!(search_json["count"], 1);
 
     let path = lexa()
         .current_dir(project)
@@ -284,7 +291,9 @@ fn cli_auto_refreshes_stale_graph_before_read_and_search() {
         .output()
         .unwrap();
     assert!(missing.status.success());
-    assert!(String::from_utf8_lossy(&missing.stdout).contains("File not found"));
+    let missing_json = parse_toon_output(&missing.stdout);
+    assert_eq!(missing_json["ok"], false);
+    assert_eq!(missing_json["error"], "file_not_found");
 }
 
 #[test]
@@ -320,9 +329,10 @@ fn cli_patch_compact_preview_and_success_output_are_focused() {
         .output()
         .unwrap();
     assert!(preview.status.success());
-    let stdout = String::from_utf8_lossy(&preview.stdout);
-    assert!(stdout.contains("+    3: inserted"));
-    assert!(!stdout.contains("-    3: three"));
+    let preview_json = parse_toon_output(&preview.stdout);
+    let preview_content = preview_json["content"].as_str().unwrap();
+    assert!(preview_content.contains("+    3: inserted"));
+    assert!(!preview_content.contains("-    3: three"));
 
     let changed = lexa()
         .current_dir(project)
@@ -338,8 +348,12 @@ fn cli_patch_compact_preview_and_success_output_are_focused() {
         .output()
         .unwrap();
     assert!(changed.status.success());
-    let stdout = String::from_utf8_lossy(&changed.stdout);
-    assert!(stdout.contains("edit applied to a.rs: +1 -0 lines (6 total)"));
+    let changed_json = parse_toon_output(&changed.stdout);
+    assert_eq!(changed_json["path"], "a.rs");
+    assert_eq!(changed_json["changed"], true);
+    assert_eq!(changed_json["lines_added"], 1);
+    assert_eq!(changed_json["lines_removed"], 0);
+    assert_eq!(changed_json["line_count"], 6);
 }
 
 #[test]
@@ -373,8 +387,10 @@ fn cli_patch_reports_content_change_when_line_counts_do_not_change() {
         .unwrap();
 
     assert!(changed.status.success());
-    assert!(String::from_utf8_lossy(&changed.stdout)
-        .contains("content changed without line-count change (2 total)"));
+    let changed_json = parse_toon_output(&changed.stdout);
+    assert_eq!(changed_json["path"], "a.rs");
+    assert_eq!(changed_json["changed"], true);
+    assert_eq!(changed_json["line_count"], 2);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
 }
 

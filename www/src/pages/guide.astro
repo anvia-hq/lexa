@@ -1,0 +1,117 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro'
+import CodeBlock from '../components/CodeBlock.astro'
+
+const quickStart = `lexa index .
+lexa status
+lexa brief "add request timeout handling" --path-prefix src --max-results 8
+lexa symbol-search "createAgent" --max 10
+lexa outline src/main.rs
+lexa read src/main.rs -L 1-80 --compact --hash
+lexa audit --max 25`
+
+const routes = [
+  ['I do not know the project yet', 'files, list, recent', 'Map the tree first. Avoid reading random files.'],
+  ['I know part of a path', 'path-search, glob', 'Find candidate files before opening them.'],
+  ['I know a symbol name', 'symbol-defs, symbol-search', 'Jump to definitions without grep and candidate reads.'],
+  ['I need all usages', 'word-refs, callers', 'Separate broad references from real call impact.'],
+  ['I need task context', 'brief', 'Ask for a compact bundle around symbols, paths, or exact keywords.'],
+  ['I need impact risk', 'trace-deps, audit', 'Check import reach and structural findings before editing.'],
+  ['I need a small edit', 'read, patch, create', 'Read with a hash, dry-run the change, then apply.'],
+]
+
+const recipes = [
+  {
+    name: 'Find Where To Work',
+    note: 'Use this when the task is clear but the files are not.',
+    code: `lexa brief "create agent tool" --path-prefix packages/core --max-results 6
+lexa symbol-search createTool --max 10
+lexa outline packages/core/src/tool/create-tool.ts
+lexa read packages/core/src/tool/create-tool.ts -L 1-120 --compact --hash`,
+  },
+  {
+    name: 'Understand A Symbol',
+    note: 'Use this before renaming, changing behavior, or touching shared code.',
+    code: `lexa symbol-defs Agent
+lexa callers createTool --max 20
+lexa word-refs Agent --path-prefix packages/core --max-results 25`,
+  },
+  {
+    name: 'Review A Checkout',
+    note: 'Use this after switching branches or pulling a PR branch.',
+    code: `lexa index .
+lexa audit --since main --max 25
+lexa recent --limit 10
+lexa changes 0`,
+  },
+  {
+    name: 'Check Dependency Impact',
+    note: 'Use this before editing a module that may be imported widely.',
+    code: `lexa outline packages/core/src/agent/agent.ts
+lexa trace-deps packages/core/src/agent/agent.ts
+lexa pipeline 'glob packages/core/**/*.ts | search Agent | limit 8'`,
+  },
+  {
+    name: 'Patch Safely',
+    note: 'Use this only for small line-based edits. Broad rewrites belong to normal editor or patch tools.',
+    code: `lexa read src/main.rs -L 20-80 --hash
+lexa patch src/main.rs replace -L 42-44 --if-hash <hash> --content-file /tmp/new-block --dry-run
+lexa patch src/main.rs replace -L 42-44 --if-hash <hash> --content-file /tmp/new-block
+lexa index .`,
+  },
+]
+
+const reminders = [
+  ['Do', 'Start with brief when the task has a useful symbol, path, module, or keyword.'],
+  ['Do', 'Keep reads small with line ranges and compact output.'],
+  ['Do', 'Use trace-deps and audit before changing central modules.'],
+  ['Do not', 'Treat Lexa as a compiler, linter, formatter, or test runner.'],
+  ['Do not', 'Use removed output flags such as --json, --structured-content, or --json-output.'],
+  ['Do not', 'Skip repository verification after edits.'],
+]
+---
+
+<SiteLayout title="Guide - Lexa">
+  <p class="m-0 p-0">
+    Use Lexa to move from uncertainty to a small set of files, symbols, references, and safe edit ranges. It is the map before the work, not the proof that the work is correct.
+  </p>
+
+  <div class="mt-8">
+    <CodeBlock code={quickStart} />
+  </div>
+
+  <div class="mt-8 space-y-5">
+    {routes.map(([situation, tools, reason]) => (
+      <section>
+        <p class="m-0 text-sm text-stone-200">{situation}</p>
+        <p class="mt-1 p-0 font-mono text-sm leading-[1.45] text-stone-300">{tools}</p>
+        <p class="mt-1 p-0 text-sm leading-[1.45] text-stone-500">{reason}</p>
+      </section>
+    ))}
+  </div>
+
+  <div class="mt-8 space-y-8">
+    {recipes.map((recipe) => (
+      <section>
+        <p class="m-0 text-sm text-stone-200">{recipe.name}</p>
+        <p class="mt-1 p-0 text-sm leading-[1.45] text-stone-500">{recipe.note}</p>
+        <div class="mt-3">
+          <CodeBlock code={recipe.code} />
+        </div>
+      </section>
+    ))}
+  </div>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
+      <tbody>
+        {reminders.map(([kind, text]) => (
+          <tr>
+            <td class="whitespace-nowrap py-0.5 pr-6 align-top text-stone-300">{kind}</td>
+            <td class="py-0.5 align-top">{text}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</SiteLayout>

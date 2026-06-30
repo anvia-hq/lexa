@@ -1,0 +1,148 @@
+@import "@fontsource/geist/400.css";
+@import "@fontsource/geist/500.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+:root {
+  --code-snippet-bg: #101010;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #44403c var(--code-snippet-bg);
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--code-snippet-bg);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #44403c;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #57534e;
+}
+
+code,
+pre,
+kbd,
+samp,
+.font-mono,
+.shiki {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+.command-code {
+  color: #e7e5e4;
+  font-size: 0.875em;
+}
+
+.command-code .line {
+  display: inline;
+}
+
+.code-frame .shiki,
+.skill-doc .shiki {
+  margin: 0;
+  padding: 0.75rem 0 0.75rem 1rem;
+  overflow-x: auto;
+  border-left: 1px solid #44403c;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.code-frame code,
+.skill-doc .shiki code {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  font-family: inherit;
+}
+
+.skill-doc {
+  color: #d6d3d1;
+}
+
+.skill-doc h1 {
+  margin: 0 0 2rem;
+  color: #e7e5e4;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.skill-doc h2 {
+  margin: 2rem 0 0.75rem;
+  color: #e7e5e4;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.skill-doc p {
+  margin: 0 0 1rem;
+}
+
+.skill-doc ul {
+  margin: 0 0 1rem;
+  padding-left: 1rem;
+  color: #a8a29e;
+  list-style: disc;
+}
+
+.skill-doc li {
+  margin: 0.2rem 0;
+}
+
+.skill-doc table {
+  display: block;
+  width: 100%;
+  margin: 1rem 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+  color: #a8a29e;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.skill-doc th {
+  padding: 0 1.5rem 0.5rem 0;
+  color: #78716c;
+  font-weight: 400;
+  text-align: left;
+}
+
+.skill-doc td {
+  padding: 0.125rem 1.5rem 0.125rem 0;
+  vertical-align: top;
+}
+
+.skill-doc code {
+  color: #e7e5e4;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+.skill-doc pre {
+  margin: 1rem 0;
+}
+
+.skill-doc pre code {
+  color: inherit;
+  font-size: inherit;
+}

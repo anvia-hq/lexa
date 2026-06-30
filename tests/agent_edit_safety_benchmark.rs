@@ -6,6 +6,7 @@ use common::{
     assert_all_correct, bench_result_against, parse_json, print_report, run_lexa, run_lexa_fail,
     run_lexa_text_for_json_args, write_fixture, BenchResult,
 };
+use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
@@ -44,7 +45,6 @@ struct ReadTask {
 
 fn read_task(project: &Path) -> ReadTask {
     let args = [
-        "--json",
         "read",
         "src/agent.rs",
         "--line-start",
@@ -76,13 +76,15 @@ fn read_task(project: &Path) -> ReadTask {
 }
 
 fn read_if_hash_task(project: &Path, hash: &str) -> BenchResult {
-    let lexa = run_lexa(
-        project,
-        &["--json", "read", "src/agent.rs", "--if-hash", hash],
-    );
+    let lexa = run_lexa(project, &["read", "src/agent.rs", "--if-hash", hash]);
     let measured = run_lexa(project, &["read", "src/agent.rs", "--if-hash", hash]);
     let json = parse_json(&lexa.stdout);
-    let correct = json["unchanged"] == true && json["content"] == "";
+    let content_empty = json
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::is_empty)
+        .unwrap_or(true);
+    let correct = json["unchanged"] == true && content_empty;
     bench_result_against(
         SUITE,
         "unchanged hash read",
@@ -96,10 +98,8 @@ fn read_if_hash_task(project: &Path, hash: &str) -> BenchResult {
 
 fn read_patch_verify_workflow_task(project: &Path) -> BenchResult {
     let read = run_lexa(project, &["read", "src/orchestrator.rs", "--hash"]);
-    let hash = read
-        .stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("hash:"))
+    let hash = parse_json(&read.stdout)["hash"]
+        .as_str()
         .unwrap()
         .to_string();
     let marker = "pub fn workflow_marker() -> usize { 13 }";
@@ -141,11 +141,13 @@ fn read_patch_verify_workflow_task(project: &Path) -> BenchResult {
         "{}{}{}{}",
         read.stdout, dry_run.stdout, changed.stdout, verify.stdout
     );
-    let correct = dry_run.stdout.contains(marker)
-        && changed
-            .stdout
-            .contains("edit applied to src/orchestrator.rs")
-        && verify.stdout.contains(marker)
+    let dry_run_json = parse_json(&dry_run.stdout);
+    let changed_json = parse_json(&changed.stdout);
+    let verify_json = parse_json(&verify.stdout);
+    let correct = dry_run_json["content"].as_str().unwrap().contains(marker)
+        && changed_json["path"] == "src/orchestrator.rs"
+        && changed_json["changed"] == true
+        && verify_json["content"].as_str().unwrap().contains(marker)
         && file_content.contains(marker);
     bench_result_against(
         SUITE,
@@ -174,7 +176,8 @@ fn patch_dry_run_task(project: &Path) -> BenchResult {
         ],
     );
     let after = fs::read_to_string(project.join("src/config.rs")).unwrap();
-    let correct = measured.stdout.contains("pub id: usize") && before == after;
+    let json = parse_json(&measured.stdout);
+    let correct = json["content"].as_str().unwrap().contains("pub id: usize") && before == after;
     bench_result_against(
         SUITE,
         "patch dry-run",
@@ -200,7 +203,9 @@ fn patch_real_task(project: &Path) -> BenchResult {
         ],
     );
     let content = fs::read_to_string(project.join("src/config.rs")).unwrap();
-    let correct = measured.stdout.contains("edit applied to src/config.rs")
+    let json = parse_json(&measured.stdout);
+    let correct = json["path"] == "src/config.rs"
+        && json["changed"] == true
         && content.contains("pub id: usize");
     bench_result_against(
         SUITE,
@@ -256,7 +261,9 @@ fn patch_replace_text_task(project: &Path) -> BenchResult {
         ],
     );
     let content = fs::read_to_string(project.join("docs/agent.md")).unwrap();
-    let correct = measured.stdout.contains("edit applied to docs/agent.md")
+    let json = parse_json(&measured.stdout);
+    let correct = json["path"] == "docs/agent.md"
+        && json["changed"] == true
         && content.contains("non-code context for benchmark scoring");
     bench_result_against(
         SUITE,
@@ -280,8 +287,11 @@ fn create_dry_run_task(project: &Path) -> BenchResult {
             "--dry-run",
         ],
     );
-    let correct =
-        measured.stdout.contains("create dry-run") && !project.join("src/generated.rs").exists();
+    let json = parse_json(&measured.stdout);
+    let correct = json["dry_run"] == true
+        && json["path"] == "src/generated.rs"
+        && json["would_create"] == true
+        && !project.join("src/generated.rs").exists();
     bench_result_against(
         SUITE,
         "create dry-run",
@@ -304,7 +314,10 @@ fn create_real_task(project: &Path) -> BenchResult {
         ],
     );
     let content = fs::read_to_string(project.join("src/generated.rs")).unwrap();
-    let correct = measured.stdout.contains("file created") && content.contains("generated");
+    let json = parse_json(&measured.stdout);
+    let correct = json["path"] == "src/generated.rs"
+        && json["changed"] == true
+        && content.contains("generated");
     bench_result_against(
         SUITE,
         "create real file",
@@ -343,8 +356,10 @@ fn create_existing_rejected_task(project: &Path) -> BenchResult {
 
 fn changes_task(project: &Path) -> BenchResult {
     let lexa = run_lexa(project, &["changes", "0"]);
-    let correct = lexa.stdout.contains("No changes since sequence 0")
-        && lexa.stdout.contains("session-local");
+    let json = parse_json(&lexa.stdout);
+    let correct = json["since"] == 0
+        && json["count"] == 0
+        && json["note"].as_str().unwrap().contains("session-local");
     bench_result_against(
         SUITE,
         "session-local changes view",

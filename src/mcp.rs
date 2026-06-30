@@ -9,9 +9,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
-use crate::engine::{Engine, FileFilterOptions, SearchOptions};
+use crate::engine::{Engine, FileFilterOptions, SearchOptions, WordSearchOptions};
 use crate::freshness;
-use crate::output::{format_unix_ms_utc, rich_results_json};
+use crate::output::{
+    agent_error_toon, agent_toon, format_unix_ms_utc, rich_results_json, word_result_kind_facets,
+    word_result_path_facets,
+};
 use crate::project_path::{normalize_project_path, project_target_path, PathMode};
 use crate::snapshot;
 use crate::store;
@@ -26,7 +29,6 @@ pub struct McpServer {
     root: PathBuf,
     graph_path: PathBuf,
     persist_graph: bool,
-    include_structured_content: bool,
     diagnostics: Diagnostics,
     watcher: Option<RuntimeWatcher>,
 }
@@ -41,7 +43,6 @@ struct RuntimeWatcher {
 }
 
 struct ToolOutput {
-    text: String,
     structured: Value,
 }
 
@@ -57,8 +58,8 @@ enum StdioFraming {
 }
 
 impl ToolOutput {
-    fn new(text: String, structured: Value) -> Self {
-        Self { text, structured }
+    fn new(_text: String, structured: Value) -> Self {
+        Self { structured }
     }
 }
 
@@ -105,7 +106,6 @@ impl McpServer {
         root: PathBuf,
         graph_path: PathBuf,
         persist_graph: bool,
-        include_structured_content: bool,
         diagnostics: Diagnostics,
     ) -> Self {
         Self {
@@ -113,7 +113,6 @@ impl McpServer {
             root,
             graph_path,
             persist_graph,
-            include_structured_content,
             diagnostics,
             watcher: None,
         }
@@ -318,7 +317,7 @@ impl McpServer {
                 };
                 let args = params.get("arguments").unwrap_or(&Value::Null);
                 let result = self.call_tool(name, args);
-                Some(tool_response(id, result, self.include_structured_content))
+                Some(tool_response(id, name, result))
             }
             "ping" => id.map(|id| json!({ "jsonrpc": "2.0", "id": id, "result": {} })),
             _ => id.map(|id| json_rpc_error(Some(id), -32601, "method not found")),
@@ -339,7 +338,7 @@ impl McpServer {
             "outline" => self.tool_outline(req_str(args, "path")?),
             "symbol_defs" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
             "symbol_search" => self.tool_symbol_search(args),
-            "word_refs" => self.tool_find_word(req_any_str(args, &["word", "query"])?),
+            "word_refs" => self.tool_find_word(args),
             "text_search" => self.tool_search(args),
             "callers" => self.tool_find_callers(req_any_str(args, &["name", "query"])?),
             "brief" => self.tool_brief(args),
@@ -649,11 +648,42 @@ impl McpServer {
         ))
     }
 
-    fn tool_find_word(&self, word: &str) -> Result<ToolOutput> {
-        let results = self.engine.search_word(word);
+    fn tool_find_word(&self, args: &Value) -> Result<ToolOutput> {
+        let word = req_any_str(args, &["word", "query"])?;
+        let limit = opt_usize(args, "max_results")
+            .or_else(|| opt_usize(args, "max"))
+            .unwrap_or(50)
+            .max(1);
+        let options = WordSearchOptions {
+            path_prefix: opt_str(args, "path_prefix")
+                .or_else(|| opt_str(args, "path"))
+                .map(ToString::to_string),
+            path_glob: opt_str(args, "path_glob").map(ToString::to_string),
+        };
+        let all_results = self.engine.search_word_with_options(word, &options);
+        let total = all_results.len();
+        let cursor = opt_usize(args, "cursor").unwrap_or(0).min(total);
+        let end = cursor.saturating_add(limit).min(total);
+        let results = all_results[cursor..end].to_vec();
+        let next_cursor = (end < total).then_some(end);
         Ok(ToolOutput::new(
-            render_search_results(word, &results),
-            json!({"query": word, "count": results.len(), "results": results}),
+            render_word_search_results(word, &results),
+            json!({
+                "query": word,
+                "count": results.len(),
+                "total": total,
+                "limit": limit,
+                "cursor": cursor,
+                "truncated": next_cursor.is_some(),
+                "next_cursor": next_cursor,
+                "filters": {
+                    "path_prefix": options.path_prefix,
+                    "path_glob": options.path_glob,
+                },
+                "facets": word_result_path_facets(&all_results),
+                "kind_facets": word_result_kind_facets(&all_results),
+                "results": results,
+            }),
         ))
     }
 
@@ -956,6 +986,7 @@ impl McpServer {
             overwrite,
             dry_run,
         };
+        let would_create = dry_run && !request.path.exists();
         let result = edit::create_file(&request)?;
         if !dry_run {
             self.engine
@@ -971,9 +1002,7 @@ impl McpServer {
         } else {
             format!("file created: {} lines, hash:{hash}", result.line_count)
         };
-        Ok(ToolOutput::new(
-            text,
-            json!({
+        let mut payload = json!({
                 "path": rel_path,
                 "op": "create",
                 "dry_run": dry_run,
@@ -982,8 +1011,11 @@ impl McpServer {
                 "line_count": result.line_count,
                 "byte_size": result.byte_size,
                 "change_sequence": self.engine.store().current_seq(),
-            }),
-        ))
+        });
+        if would_create {
+            payload["would_create"] = json!(true);
+        }
+        Ok(ToolOutput::new(text, payload))
     }
 
     fn tool_changes(&self, since: u64) -> ToolOutput {
@@ -1303,37 +1335,46 @@ fn write_response(writer: &mut impl Write, framing: StdioFraming, response: &Val
     Ok(())
 }
 
-fn tool_response(id: Value, result: Result<ToolOutput>, include_structured_content: bool) -> Value {
+fn tool_response(id: Value, name: &str, result: Result<ToolOutput>) -> Value {
     match result {
-        Ok(output) => {
-            let mut result = json!({
-                "content": [{ "type": "text", "text": output.text }],
-                "isError": false
-            });
-            if include_structured_content && !output.structured.is_null() {
-                result["structuredContent"] = output.structured;
-            }
-            json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result
-            })
-        }
-        Err(err) => {
-            let mut response = json!({
+        Ok(output) => match agent_toon(name, output.structured) {
+            Ok(text) => json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
-                    "content": [{ "type": "text", "text": format!("error: {err}") }],
+                    "content": [{ "type": "text", "text": text }],
+                    "isError": false
+                }
+            }),
+            Err(err) => {
+                let text = encode_tool_error(name, &err.to_string());
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{ "type": "text", "text": text }],
+                        "isError": true
+                    }
+                })
+            }
+        },
+        Err(err) => {
+            let text = encode_tool_error(name, &err.to_string());
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [{ "type": "text", "text": text }],
                     "isError": true
                 }
-            });
-            if include_structured_content {
-                response["result"]["structuredContent"] = json!({ "error": err.to_string() });
-            }
-            response
+            })
         }
     }
+}
+
+fn encode_tool_error(name: &str, error: &str) -> String {
+    agent_error_toon(name, error)
+        .unwrap_or_else(|err| format!("tool: {}\nok: false\nerror: {err}", name.replace('-', "_")))
 }
 
 fn json_rpc_error(id: Option<Value>, code: i32, message: &str) -> Value {
@@ -1365,9 +1406,22 @@ fn tools() -> Value {
         .map(|spec| json!({
             "name": spec.name,
             "description": spec.summary,
-            "inputSchema": spec.input_schema,
+            "inputSchema": compact_input_schema(&spec.input_schema),
         }))
         .collect::<Vec<_>>())
+}
+
+fn compact_input_schema(schema: &Value) -> Value {
+    match schema {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "description" | "examples"))
+                .map(|(key, value)| (key.clone(), compact_input_schema(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(compact_input_schema).collect()),
+        _ => schema.clone(),
+    }
 }
 
 fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -1522,6 +1576,20 @@ fn render_search_results(query: &str, results: &[crate::types::SearchResult]) ->
     out
 }
 
+fn render_word_search_results(query: &str, results: &[crate::engine::WordSearchResult]) -> String {
+    if results.is_empty() {
+        return format!("No results found for '{query}'");
+    }
+    let mut out = format!("{} results for '{query}':\n", results.len());
+    for result in results {
+        out.push_str(&format!(
+            "{}  {}:{}: {}\n",
+            result.kind, result.path, result.line_num, result.line_text
+        ));
+    }
+    out
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1539,7 +1607,6 @@ mod tests {
             Engine::new(32),
             root.path().to_path_buf(),
             root.path().join(".lexa/graph.lexa"),
-            false,
             false,
             Diagnostics::disabled(),
         )
@@ -1560,7 +1627,6 @@ mod tests {
             root.path().to_path_buf(),
             root.path().join(".lexa/graph.lexa"),
             false,
-            false,
             Diagnostics::disabled(),
         )
     }
@@ -1569,6 +1635,16 @@ mod tests {
         match result {
             Ok(_) => panic!("expected tool error"),
             Err(err) => err.to_string(),
+        }
+    }
+
+    fn schema_contains_key(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::Object(map) => map
+                .iter()
+                .any(|(key, value)| key == needle || schema_contains_key(value, needle)),
+            Value::Array(items) => items.iter().any(|value| schema_contains_key(value, needle)),
+            _ => false,
         }
     }
 
@@ -1686,55 +1762,41 @@ mod tests {
         assert_eq!(output, expected);
     }
 
+    fn decode_response_text(response: &Value) -> Value {
+        toon_format::decode_default::<Value>(
+            response["result"]["content"][0]["text"].as_str().unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn tool_response_omits_structured_content_by_default() {
+    fn tool_response_returns_toon_text_without_structured_content() {
         let response = tool_response(
             json!(1),
+            "status",
             Ok(ToolOutput::new(
                 "plain text".to_string(),
-                json!({"count": 1}),
+                json!({"files_indexed": 1}),
             )),
-            false,
         );
 
-        assert_eq!(
-            response["result"]["content"][0]["text"],
-            Value::String("plain text".to_string())
-        );
+        let decoded = decode_response_text(&response);
+        assert_eq!(decoded["tool"], "status");
+        assert!(decoded.get("ok").is_none());
+        assert_eq!(decoded["files_indexed"], 1);
         assert!(response["result"].get("structuredContent").is_none());
     }
 
     #[test]
-    fn tool_response_includes_structured_content_when_enabled() {
-        let response = tool_response(
-            json!(1),
-            Ok(ToolOutput::new(
-                "plain text".to_string(),
-                json!({"count": 1}),
-            )),
-            true,
-        );
+    fn tool_error_response_returns_toon_text_without_structured_content() {
+        let response = tool_response(json!(1), "status", Err(anyhow::anyhow!("bad input")));
 
-        assert_eq!(response["result"]["structuredContent"], json!({"count": 1}));
-    }
-
-    #[test]
-    fn tool_error_response_omits_structured_content_by_default() {
-        let response = tool_response(json!(1), Err(anyhow::anyhow!("bad input")), false);
-
+        let decoded = decode_response_text(&response);
         assert_eq!(response["result"]["isError"], Value::Bool(true));
+        assert_eq!(decoded["tool"], "status");
+        assert_eq!(decoded["ok"], false);
+        assert_eq!(decoded["error"], "bad input");
         assert!(response["result"].get("structuredContent").is_none());
-    }
-
-    #[test]
-    fn tool_error_response_includes_structured_content_when_enabled() {
-        let response = tool_response(json!(1), Err(anyhow::anyhow!("bad input")), true);
-
-        assert_eq!(response["result"]["isError"], Value::Bool(true));
-        assert_eq!(
-            response["result"]["structuredContent"]["error"],
-            "bad input"
-        );
     }
 
     #[test]
@@ -1783,7 +1845,30 @@ mod tests {
         for (tool, spec) in arr.iter().zip(tool_spec::TOOL_SPECS.iter()) {
             assert_eq!(tool["name"], spec.name);
             assert_eq!(tool["description"], spec.summary);
-            assert_eq!(tool["inputSchema"], spec.input_schema);
+            assert_eq!(
+                tool["inputSchema"],
+                compact_input_schema(&spec.input_schema)
+            );
+        }
+    }
+
+    #[test]
+    fn tools_list_compacts_nested_schema_descriptions() {
+        let tools = tools();
+        let arr = tools.as_array().expect("tools list must be an array");
+
+        for tool in arr {
+            let schema = &tool["inputSchema"];
+            assert!(
+                !schema_contains_key(schema, "description"),
+                "{} schema still contains description fields",
+                tool["name"].as_str().unwrap_or("<unknown>")
+            );
+            assert!(
+                !schema_contains_key(schema, "examples"),
+                "{} schema still contains examples fields",
+                tool["name"].as_str().unwrap_or("<unknown>")
+            );
         }
     }
 
@@ -1803,13 +1888,115 @@ mod tests {
     }
 
     #[test]
+    fn word_refs_supports_filters_and_source_ranked_pagination() {
+        let root = tempfile::tempdir().unwrap();
+        let server = indexed_server(
+            &root,
+            &[
+                ("docs/agent.md", "Agent docs\n"),
+                ("examples/agent.rs", "let _ = Agent;\n"),
+                ("packages/core/src/agent.rs", "struct Agent;\n"),
+                (
+                    "packages/core/src/use_agent.ts",
+                    "import { Agent } from './agent';\n",
+                ),
+                (
+                    "packages/core/test/helpers/imports.ts",
+                    "export { Agent } from '../../src/agent';\n",
+                ),
+                ("packages/core/tests/agent_test.rs", "Agent::new();\n"),
+            ],
+        );
+
+        let first_page = server
+            .tool_find_word(&json!({
+                "word": "Agent",
+                "path_prefix": "packages/core",
+                "max_results": 1
+            }))
+            .unwrap();
+
+        assert_eq!(first_page.structured["total"], 4);
+        assert_eq!(
+            first_page.structured["results"][0]["path"],
+            "packages/core/src/agent.rs"
+        );
+        assert_eq!(first_page.structured["results"][0]["kind"], "definition");
+        assert!(
+            first_page.structured["results"][0]["score"]
+                .as_i64()
+                .unwrap()
+                > 0
+        );
+        assert!(first_page.structured["kind_facets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|facet| facet["kind"] == "definition"));
+        assert_eq!(first_page.structured["next_cursor"], 1);
+        assert_eq!(
+            first_page.structured["filters"]["path_prefix"],
+            "packages/core"
+        );
+
+        let zero_limit = server
+            .tool_find_word(&json!({
+                "word": "Agent",
+                "path_prefix": "packages/core",
+                "max_results": 0
+            }))
+            .unwrap();
+        assert_eq!(zero_limit.structured["limit"], 1);
+        assert_eq!(zero_limit.structured["count"], 1);
+        assert_eq!(zero_limit.structured["next_cursor"], 1);
+
+        let ranked = server
+            .tool_find_word(&json!({
+                "word": "Agent",
+                "path_prefix": "packages/core",
+                "max_results": 4
+            }))
+            .unwrap();
+        let ranked_results = ranked.structured["results"].as_array().unwrap();
+        let source_import_index = ranked_results
+            .iter()
+            .position(|result| result["path"] == "packages/core/src/use_agent.ts")
+            .unwrap();
+        let test_export_index = ranked_results
+            .iter()
+            .position(|result| result["path"] == "packages/core/test/helpers/imports.ts")
+            .unwrap();
+        assert!(source_import_index < test_export_index);
+        assert_eq!(ranked_results[test_export_index]["kind"], "export");
+        assert!(
+            ranked_results[source_import_index]["score"]
+                .as_i64()
+                .unwrap()
+                > ranked_results[test_export_index]["score"].as_i64().unwrap()
+        );
+
+        let globbed = server
+            .tool_find_word(&json!({
+                "query": "Agent",
+                "path_glob": "**/tests/*.rs"
+            }))
+            .unwrap();
+
+        assert_eq!(globbed.structured["total"], 1);
+        assert_eq!(
+            globbed.structured["results"][0]["path"],
+            "packages/core/tests/agent_test.rs"
+        );
+        assert_eq!(globbed.structured["results"][0]["kind"], "test");
+    }
+
+    #[test]
     fn read_tool_returns_hash_content_ranges_and_unchanged_response() {
         let root = tempfile::tempdir().unwrap();
         let server = indexed_server(&root, &[("src/app.rs", "one\ntwo\nthree\n")]);
 
         let full = server.tool_read(&json!({"path": "src/app.rs"})).unwrap();
         let hash = full.structured["hash"].as_str().unwrap().to_string();
-        assert!(full.text.starts_with("hash:"));
         assert_eq!(full.structured["content"], "one\ntwo\nthree\n");
         assert_eq!(full.structured["unchanged"], false);
 
@@ -1832,7 +2019,6 @@ mod tests {
         let unchanged = server
             .tool_read(&json!({"path": "src/app.rs", "if_hash": hash}))
             .unwrap();
-        assert!(unchanged.text.starts_with("unchanged:"));
         assert_eq!(unchanged.structured["unchanged"], true);
         assert_eq!(unchanged.structured["content"], "");
     }
@@ -1979,6 +2165,7 @@ mod tests {
             .unwrap();
         assert_eq!(dry_run.structured["dry_run"], true);
         assert_eq!(dry_run.structured["changed"], false);
+        assert_eq!(dry_run.structured["would_create"], true);
         assert!(!root.path().join("src/new.rs").exists());
 
         let created = server
@@ -2045,7 +2232,6 @@ mod tests {
         let recent = server.tool_recent(5);
         assert_eq!(recent.structured["count"], 1);
         assert_eq!(recent.structured["files"][0]["path"], "src/app.rs");
-        assert!(recent.text.contains("src/app.rs"));
 
         let status = server.tool_status();
         assert_eq!(status.structured["files_indexed"], 1);
@@ -2064,7 +2250,6 @@ mod tests {
             root.path().to_path_buf(),
             root.path().join(".lexa/graph.lexa"),
             false,
-            false,
             Diagnostics::disabled(),
         );
 
@@ -2075,7 +2260,10 @@ mod tests {
             }))
             .unwrap();
 
-        assert!(output.text.contains("AgentRunRequest"));
+        assert_eq!(output.structured["result_type"], "results");
+        assert!(output.structured["items"]
+            .to_string()
+            .contains("AgentRunRequest"));
     }
 
     #[test]
@@ -2085,7 +2273,6 @@ mod tests {
             Engine::new(32),
             root.path().to_path_buf(),
             root.path().join(".lexa/graph.lexa"),
-            false,
             false,
             Diagnostics::disabled(),
         );
