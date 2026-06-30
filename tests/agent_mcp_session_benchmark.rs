@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::time::Duration;
 
 const SUITE: &str = "mcp_session";
 
@@ -19,6 +20,7 @@ fn agent_mcp_session_benchmark_v2() {
     let project = temp.path();
     write_fixture(project);
     run_lexa(project, &["index", "."]);
+    std::thread::sleep(Duration::from_millis(20));
 
     let mut session = McpSession::start(project);
     session.initialize();
@@ -111,7 +113,12 @@ fn mcp_changes_task(session: &mut McpSession) -> BenchResult {
 fn mcp_recent_task(session: &mut McpSession) -> BenchResult {
     let response = session.call_tool("recent", json!({"limit": 5}));
     let text = tool_text(&response);
-    let correct = text.contains("src/session_created.rs");
+    let payload = parse_json(text);
+    let correct = payload["files"].as_array().is_some_and(|files| {
+        files
+            .iter()
+            .any(|file| file["path"] == "src/session_created.rs")
+    });
     bench_result_against(
         SUITE,
         "session recent state",
