@@ -1781,8 +1781,8 @@ mod tests {
 
         let decoded = decode_response_text(&response);
         assert_eq!(decoded["tool"], "status");
-        assert_eq!(decoded["ok"], true);
-        assert_eq!(decoded["summary"]["files_indexed"], 1);
+        assert!(decoded.get("ok").is_none());
+        assert_eq!(decoded["files_indexed"], 1);
         assert!(response["result"].get("structuredContent").is_none());
     }
 

@@ -211,7 +211,7 @@ fn cli_accepts_agent_friendly_aliases() {
         .unwrap();
     assert!(search.status.success());
     let search_json = parse_toon_output(&search.stdout);
-    assert_eq!(search_json["summary"]["count"], 1);
+    assert_eq!(search_json["count"], 1);
 
     let path = lexa()
         .current_dir(project)
@@ -349,11 +349,11 @@ fn cli_patch_compact_preview_and_success_output_are_focused() {
         .unwrap();
     assert!(changed.status.success());
     let changed_json = parse_toon_output(&changed.stdout);
-    assert_eq!(changed_json["summary"]["path"], "a.rs");
-    assert_eq!(changed_json["summary"]["changed"], true);
-    assert_eq!(changed_json["summary"]["lines_added"], 1);
-    assert_eq!(changed_json["summary"]["lines_removed"], 0);
-    assert_eq!(changed_json["summary"]["line_count"], 6);
+    assert_eq!(changed_json["path"], "a.rs");
+    assert_eq!(changed_json["changed"], true);
+    assert_eq!(changed_json["lines_added"], 1);
+    assert_eq!(changed_json["lines_removed"], 0);
+    assert_eq!(changed_json["line_count"], 6);
 }
 
 #[test]
@@ -388,9 +388,9 @@ fn cli_patch_reports_content_change_when_line_counts_do_not_change() {
 
     assert!(changed.status.success());
     let changed_json = parse_toon_output(&changed.stdout);
-    assert_eq!(changed_json["summary"]["path"], "a.rs");
-    assert_eq!(changed_json["summary"]["changed"], true);
-    assert_eq!(changed_json["summary"]["line_count"], 2);
+    assert_eq!(changed_json["path"], "a.rs");
+    assert_eq!(changed_json["changed"], true);
+    assert_eq!(changed_json["line_count"], 2);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
 }
 

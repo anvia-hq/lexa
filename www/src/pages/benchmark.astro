@@ -1,38 +1,53 @@
 ---
 import SiteLayout from '../layouts/SiteLayout.astro'
 import CodeBlock from '../components/CodeBlock.astro'
+import Callout from '../components/Callout.astro'
+
+const commands = `cargo test --test agent_retrieval_benchmark -- --nocapture
+cargo test --test agent_cli_output_format_benchmark -- --nocapture
+cargo test --test agent_edit_safety_benchmark -- --nocapture
+cargo test --test agent_mcp_session_benchmark -- --nocapture
+cargo test --test agent_maintenance_benchmark -- --nocapture`
 
 const summary = [
-  ['Accuracy', '13/13'],
-  ['Lexa est. tokens', '2017'],
-  ['Baseline est. tokens', '8397'],
-  ['Aggregate reduction', '76.0%'],
+  ['Latest local run', 'June 30, 2026'],
+  ['Correctness checks', '34/34'],
+  ['Retrieval aggregate reduction', '80.0%'],
+  ['CLI output format', '1676 est. tokens across 13 commands'],
 ]
 
-const rows = [
-  ['filtered file overview', 'files', '123', '32', '-284.4%', 'true'],
-  ['directory children', 'list', '167', '52', '-221.2%', 'true'],
-  ['glob paths', 'glob', '52', '20', '-160.0%', 'true'],
-  ['fuzzy path', 'path_search', '34', '129', '73.6%', 'true'],
-  ['scoped text search', 'text_search', '200', '105', '-90.5%', 'true'],
-  ['exact word refs', 'word_refs', '364', '274', '-32.8%', 'true'],
-  ['exact definition', 'symbol_defs', '89', '1768', '95.0%', 'true'],
-  ['fuzzy symbol', 'symbol_search', '93', '1462', '93.6%', 'true'],
-  ['callers', 'callers', '339', '945', '64.1%', 'true'],
-  ['outline', 'outline', '117', '107', '-9.3%', 'true'],
-  ['dependencies', 'trace_deps', '54', '113', '52.2%', 'true'],
-  ['brief', 'brief', '243', '2445', '90.1%', 'true'],
-  ['composed query', 'pipeline', '142', '945', '85.0%', 'true'],
+const suiteRows = [
+  ['retrieval', '13/13', '1678', '8397', '80.0%', 'Indexed answers against listing, grep, and candidate reads.'],
+  ['cli_output_format', '13 cases', '1676', 'n/a', 'n/a', 'Current structured-text CLI envelope across retrieval commands.'],
+  ['edit_safety', '11/11', '709', 'n/a', 'n/a', 'Hash-aware reads, dry runs, patches, creates, and rejection paths.'],
+  ['mcp_session', '5/5', '281', 'n/a', 'n/a', 'Persistent MCP session edits and state queries.'],
+  ['maintenance', '5/5', '611', 'n/a', 'n/a', 'Recent files, status, reindex, audit, and clear-index.'],
+]
+
+const retrievalRows = [
+  ['filtered file overview', 'files', '85', '32', '-165.6%', 'true'],
+  ['directory children', 'list', '102', '52', '-96.2%', 'true'],
+  ['glob paths', 'glob', '30', '20', '-50.0%', 'true'],
+  ['fuzzy path', 'path_search', '28', '129', '78.3%', 'true'],
+  ['scoped text search', 'text_search', '177', '105', '-68.6%', 'true'],
+  ['exact word refs', 'word_refs', '304', '274', '-10.9%', 'true'],
+  ['exact definition', 'symbol_defs', '48', '1768', '97.3%', 'true'],
+  ['fuzzy symbol', 'symbol_search', '86', '1462', '94.1%', 'true'],
+  ['callers', 'callers', '330', '945', '65.1%', 'true'],
+  ['outline', 'outline', '104', '107', '2.8%', 'true'],
+  ['dependencies', 'trace_deps', '32', '113', '71.7%', 'true'],
+  ['brief', 'brief', '220', '2445', '91.0%', 'true'],
+  ['composed query', 'pipeline', '132', '945', '86.0%', 'true'],
 ]
 ---
 
 <SiteLayout title="Benchmark - Lexa">
   <p class="m-0 p-0">
-    Lexa includes deterministic agent retrieval benchmarks over a synthetic project with known ground truth. Token counts estimate the default structured-text CLI and MCP output against a baseline of file listing, grep-style search, and candidate file reads.
+    Lexa includes deterministic agent tool-suite benchmarks over a synthetic project with known ground truth. Token counts estimate the default structured-text CLI and MCP output.
   </p>
 
   <div class="mt-8">
-    <CodeBlock code="cargo test --test agent_retrieval_benchmark -- --nocapture" />
+    <CodeBlock code={commands} />
   </div>
 
   <div class="mt-8 overflow-x-auto">
@@ -48,6 +63,36 @@ const rows = [
     </table>
   </div>
 
+  <div class="mt-8 space-y-5">
+    {suiteRows.map(([suite, checks, lexa, baseline, reduction, notes]) => (
+      <section class="border-l border-stone-800 pl-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <code class="font-mono text-sm text-stone-100">{suite}</code>
+          <span class="font-mono text-xs text-stone-500">{checks}</span>
+        </div>
+        <p class="mt-1 p-0 text-sm leading-[1.5] text-stone-400">{notes}</p>
+        <dl class="mt-3 grid grid-cols-3 gap-x-4 gap-y-2 text-sm">
+          <div>
+            <dt class="text-stone-600">Lexa</dt>
+            <dd class="m-0 font-mono text-stone-200">{lexa}</dd>
+          </div>
+          <div>
+            <dt class="text-stone-600">Baseline</dt>
+            <dd class:list={['m-0 font-mono', baseline === 'n/a' ? 'text-stone-500' : 'text-stone-200']}>{baseline}</dd>
+          </div>
+          <div>
+            <dt class="text-stone-600">Reduction</dt>
+            <dd class:list={['m-0 font-mono', reduction === 'n/a' ? 'text-stone-500' : 'text-stone-200']}>{reduction}</dd>
+          </div>
+        </dl>
+      </section>
+    ))}
+  </div>
+
+  <p class="mt-8 p-0 text-stone-400">
+    Retrieval is the suite with a full non-indexed baseline: recursive file listing, grep-style search, and candidate file reads. Safety and state suites report correctness and token envelope only.
+  </p>
+
   <div class="mt-8 overflow-x-auto">
     <table class="w-full border-collapse text-left text-sm leading-[1.45] text-stone-400">
       <thead class="text-stone-500">
@@ -61,7 +106,7 @@ const rows = [
         </tr>
       </thead>
       <tbody>
-        {rows.map(([task, tool, lexa, baseline, reduction, correct]) => (
+        {retrievalRows.map(([task, tool, lexa, baseline, reduction, correct]) => (
           <tr>
             <td class="whitespace-nowrap py-0.5 pr-6 align-top">{task}</td>
             <td class="whitespace-nowrap py-0.5 pr-6 align-top">
@@ -77,7 +122,9 @@ const rows = [
     </table>
   </div>
 
-  <p class="mt-8 p-0 text-stone-400">
-    Negative reductions mean that, for that narrow task, the indexed answer is more verbose than the minimal baseline. The aggregate result is the useful signal: retrieval stayed correct while the total estimated token load dropped by 76.0%.
-  </p>
+  <div class="mt-8">
+    <Callout>
+      Negative reductions mean that, for that narrow task, the indexed answer is more verbose than the minimal baseline. The aggregate result is the useful signal: retrieval stayed correct while the total estimated token load dropped by 80.0%.
+    </Callout>
+  </div>
 </SiteLayout>

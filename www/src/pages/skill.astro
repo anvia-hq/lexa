@@ -1,53 +1,25 @@
 ---
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { marked } from 'marked'
-import { codeToHtml } from 'shiki'
 import SiteLayout from '../layouts/SiteLayout.astro'
+import CopyCommand from '../components/CopyCommand.astro'
 
-const rawSkill = readFileSync(resolve(process.cwd(), '../skill/SKILL.md'), 'utf8')
-const skillBody = rawSkill.replace(/^---\n[\s\S]*?\n---\n/, '').trim()
-const tokens = marked.lexer(skillBody, { gfm: true })
-
-const normalizeLang = (lang?: string) => {
-  const value = lang?.split(/\s+/)[0]?.toLowerCase()
-  if (!value) return 'text'
-  if (value === 'shell' || value === 'sh') return 'bash'
-  return value
-}
-
-const codeTokens: Array<{ text: string; lang: string }> = []
-const collectCode = (items: any[]) => {
-  for (const item of items) {
-    if (item.type === 'code') {
-      codeTokens.push({ text: item.text, lang: normalizeLang(item.lang) })
-    }
-    if (Array.isArray(item.tokens)) collectCode(item.tokens)
-    if (Array.isArray(item.items)) collectCode(item.items)
-  }
-}
-
-collectCode(tokens)
-
-const highlightedBlocks = await Promise.all(
-  codeTokens.map((token) =>
-    codeToHtml(token.text.trimEnd(), {
-      lang: token.lang,
-      theme: 'vesper',
-    }),
-  ),
-)
-
-let codeBlockIndex = 0
-const renderer = new marked.Renderer()
-renderer.code = () => highlightedBlocks[codeBlockIndex++]
-
-const skillHtml = marked.parse(skillBody, {
-  renderer,
-  gfm: true,
-}) as string
+const installCommands = [
+  ['Install globally for Codex', 'npx skills@latest add anvia-hq/lexa --agent codex --skill lexa -g'],
+  ['Preview the published skill', 'npx skills@latest add anvia-hq/lexa --list'],
+  ['List installed Codex skills', 'npx skills@latest list -g --agent codex'],
+  ['Update the Lexa skill', 'npx skills@latest update lexa -g'],
+]
 ---
 
 <SiteLayout title="Skill - Lexa">
-  <article class="skill-doc" set:html={skillHtml} />
+  <p class="m-0 p-0 text-stone-300">
+    The Lexa skill gives Codex and other agents a compact operating guide for using Lexa as a local codebase intelligence layer: index the project, find focused context, inspect symbols, trace dependencies, audit structure, and make hash-aware line edits.
+  </p>
+
+  <p class="mt-5 p-0 text-stone-400">
+    Install it with the community <code class="font-mono text-stone-200">skills</code> CLI. The skill assumes the Lexa binary is already available; it teaches the agent how to operate Lexa properly inside a repository.
+  </p>
+
+  <div class="mt-8 space-y-3">
+    {installCommands.map(([label, command]) => <CopyCommand label={label} command={command} />)}
+  </div>
 </SiteLayout>

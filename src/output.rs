@@ -95,12 +95,12 @@ pub fn word_result_kind_facets(results: &[WordSearchResult]) -> Value {
 pub fn agent_result_value(tool: &str, payload: Value) -> Value {
     let tool = canonical_tool(tool);
     let mut result = if let Some(error) = payload.get("error").and_then(Value::as_str) {
-        json!({
-            "tool": tool,
-            "ok": false,
-            "error": error,
-            "summary": without_keys(&payload, &["error"]),
-        })
+        let mut map = Map::new();
+        map.insert("tool".to_string(), s(tool));
+        map.insert("ok".to_string(), Value::Bool(false));
+        map.insert("error".to_string(), s(error));
+        flatten_metadata(&mut map, without_keys(&payload, &["error"]));
+        Value::Object(map)
     } else {
         match tool.as_str() {
             "files" => files_result(&tool, payload),
@@ -122,11 +122,7 @@ pub fn agent_result_value(tool: &str, payload: Value) -> Value {
             "status" | "index" | "reindex" | "clear_index" => summary_only_result(&tool, payload),
             "audit" => audit_result(&tool, payload),
             "pipeline" => pipeline_result(&tool, payload),
-            _ => json!({
-                "tool": tool,
-                "ok": true,
-                "summary": payload,
-            }),
+            _ => Value::Object(base(&tool, payload)),
         }
     };
     prune_empty_and_null(&mut result);
@@ -140,9 +136,18 @@ fn canonical_tool(tool: &str) -> String {
 fn base(tool: &str, summary: Value) -> Map<String, Value> {
     let mut map = Map::new();
     map.insert("tool".to_string(), Value::String(tool.to_string()));
-    map.insert("ok".to_string(), Value::Bool(true));
-    map.insert("summary".to_string(), summary);
+    flatten_metadata(&mut map, summary);
     map
+}
+
+fn flatten_metadata(map: &mut Map<String, Value>, metadata: Value) {
+    let Value::Object(obj) = metadata else {
+        insert_if_kept(map, "value", metadata);
+        return;
+    };
+    for (key, value) in obj {
+        insert_if_kept(map, &key, value);
+    }
 }
 
 fn object(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
@@ -175,24 +180,68 @@ fn cols(names: &[&str]) -> Value {
     array(names.iter().map(|name| s(*name)))
 }
 
+#[derive(Clone, Copy)]
+enum PathTarget<'a> {
+    Rows {
+        cols_key: &'a str,
+        rows_key: &'a str,
+        col: &'a str,
+    },
+    Array {
+        key: &'a str,
+    },
+}
+
 fn files_result(tool: &str, payload: Value) -> Value {
-    let summary = pick(
+    let summary = drop_false_defaults(pick(
         &payload,
         &["count", "total", "limit", "truncated", "filters"],
-    );
-    let rows = payload
+    ));
+    let files = payload
         .get("files")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(file_row)
         .collect::<Vec<_>>();
-    with_rows(
-        tool,
-        summary,
-        &["path", "lang", "lines", "bytes", "symbols"],
-        rows,
-    )
+    let language_filter = payload
+        .get("filters")
+        .and_then(|filters| filters.get("language"))
+        .and_then(Value::as_str);
+    let omit_language = language_filter.is_some()
+        && files.iter().all(|file| {
+            file.get("language")
+                .and_then(Value::as_str)
+                .is_some_and(|language| Some(language) == language_filter)
+        });
+    let rows = files
+        .into_iter()
+        .map(|file| {
+            if omit_language {
+                row([
+                    get(file, "path"),
+                    get(file, "line_count"),
+                    get(file, "symbol_count"),
+                ])
+            } else {
+                file_row(file)
+            }
+        })
+        .collect::<Vec<_>>();
+    let columns = if omit_language {
+        &["path", "lines", "symbols"][..]
+    } else {
+        &["path", "lang", "lines", "symbols"][..]
+    };
+    let mut map = with_rows_map(tool, summary, columns, rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn list_result(tool: &str, payload: Value) -> Value {
@@ -202,38 +251,26 @@ fn list_result(tool: &str, payload: Value) -> Value {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|entry| {
-            row([
-                get(entry, "name"),
-                get(entry, "kind"),
-                get(entry, "language"),
-                get(entry, "line_count"),
-                get(entry, "byte_size"),
-                get(entry, "symbol_count"),
-            ])
-        })
+        .map(|entry| row([get(entry, "name"), get(entry, "kind")]))
         .collect::<Vec<_>>();
-    with_rows(
-        tool,
-        summary,
-        &["name", "kind", "lang", "lines", "bytes", "symbols"],
-        rows,
-    )
+    with_rows(tool, summary, &["name", "kind"], rows)
 }
 
 fn glob_result(tool: &str, payload: Value) -> Value {
-    let summary = pick(
+    let summary = drop_false_defaults(pick(
         &payload,
         &["pattern", "count", "total", "limit", "truncated"],
-    );
-    let rows = payload
+    ));
+    let paths = payload
         .get("paths")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|path| row([path.clone()]))
         .collect::<Vec<_>>();
-    with_rows(tool, summary, &["path"], rows)
+    let mut map = base(tool, summary);
+    insert_if_kept(&mut map, "paths", array(paths.into_iter().cloned()));
+    apply_path_compression(&mut map, &[PathTarget::Array { key: "paths" }]);
+    Value::Object(map)
 }
 
 fn path_search_result(tool: &str, payload: Value) -> Value {
@@ -245,7 +282,16 @@ fn path_search_result(tool: &str, payload: Value) -> Value {
         .flatten()
         .map(|result| row([get(result, "path"), get(result, "score")]))
         .collect::<Vec<_>>();
-    with_rows(tool, summary, &["path", "score"], rows)
+    let mut map = with_rows_map(tool, summary, &["path", "score"], rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn outline_result(tool: &str, payload: Value) -> Value {
@@ -265,7 +311,6 @@ fn outline_result(tool: &str, payload: Value) -> Value {
         ("path", get(&payload, "path")),
         ("lang", get(&payload, "language")),
         ("lines", get(&payload, "line_count")),
-        ("bytes", get(&payload, "byte_size")),
         ("symbols", n(symbols.len())),
         (
             "imports",
@@ -335,28 +380,14 @@ fn symbol_defs_result(tool: &str, payload: Value) -> Value {
         &["path", "line_start", "line_end", "kind", "name", "detail"],
         rows,
     );
-    let first_read_step = map
-        .get("rows")
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
-        .and_then(Value::as_array)
-        .and_then(|first| {
-            let path = first.first().and_then(Value::as_str)?.to_string();
-            let line_start = first.get(1).and_then(Value::as_u64)?;
-            let line_end = first.get(2).and_then(Value::as_u64)?;
-            Some(NextStep::new(
-                "read",
-                json!({
-                    "path": path,
-                    "line_start": line_start,
-                    "line_end": line_end,
-                }),
-                "inspect first definition",
-            ))
-        });
-    if let Some(step) = first_read_step {
-        insert_next_steps(&mut map, [step]);
-    }
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
     Value::Object(map)
 }
 
@@ -379,7 +410,7 @@ fn symbol_search_result(tool: &str, payload: Value) -> Value {
             ])
         })
         .collect::<Vec<_>>();
-    with_rows(
+    let mut map = with_rows_map(
         tool,
         summary,
         &[
@@ -392,7 +423,16 @@ fn symbol_search_result(tool: &str, payload: Value) -> Value {
             "detail",
         ],
         rows,
-    )
+    );
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn word_refs_result(tool: &str, payload: Value) -> Value {
@@ -404,12 +444,8 @@ fn word_refs_result(tool: &str, payload: Value) -> Value {
             "count",
             "total",
             "limit",
-            "cursor",
-            "truncated",
             "next_cursor",
             "filters",
-            "facets",
-            "kind_facets",
         ],
     );
     let rows = payload
@@ -420,7 +456,15 @@ fn word_refs_result(tool: &str, payload: Value) -> Value {
         .map(word_ref_row)
         .collect::<Vec<_>>();
     let mut map = base(tool, summary);
-    insert_rows(&mut map, &["kind", "path", "line", "score", "text"], rows);
+    insert_rows(&mut map, &["kind", "path", "line", "text"], rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
     if let Some(cursor) = payload.get("next_cursor") {
         let word = payload
             .get("word")
@@ -456,7 +500,7 @@ fn word_refs_result(tool: &str, payload: Value) -> Value {
 }
 
 fn search_result(tool: &str, payload: Value) -> Value {
-    let summary = pick(
+    let summary = drop_false_defaults(pick(
         &payload,
         &[
             "query",
@@ -469,37 +513,65 @@ fn search_result(tool: &str, payload: Value) -> Value {
             "paths_only",
             "path_glob",
         ],
-    );
+    ));
+    let include_scope = payload
+        .get("scope")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || payload
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|result| result.get("scope").is_some_and(keep_value));
     let rows = payload
         .get("results")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .map(|result| {
-            let scope = result.get("scope").and_then(Value::as_object).map(|scope| {
-                let kind = scope
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let name = scope
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if kind.is_empty() && name.is_empty() {
-                    String::new()
-                } else {
-                    format!("{kind} {name}").trim().to_string()
-                }
-            });
-            row([
-                get(result, "path"),
-                line_value(result),
-                scope.map_or(Value::Null, s),
-                text_value(result),
-            ])
+            if include_scope {
+                let scope = result.get("scope").and_then(Value::as_object).map(|scope| {
+                    let kind = scope
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let name = scope
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if kind.is_empty() && name.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{kind} {name}").trim().to_string()
+                    }
+                });
+                row([
+                    get(result, "path"),
+                    line_value(result),
+                    scope.map_or(Value::Null, s),
+                    text_value(result),
+                ])
+            } else {
+                search_row(result)
+            }
         })
         .collect::<Vec<_>>();
-    with_rows(tool, summary, &["path", "line", "scope", "text"], rows)
+    let columns = if include_scope {
+        &["path", "line", "scope", "text"][..]
+    } else {
+        &["path", "line", "text"][..]
+    };
+    let mut map = with_rows_map(tool, summary, columns, rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn callers_result(tool: &str, payload: Value) -> Value {
@@ -511,7 +583,16 @@ fn callers_result(tool: &str, payload: Value) -> Value {
         .flatten()
         .map(search_row)
         .collect::<Vec<_>>();
-    with_rows(tool, summary, &["path", "line", "text"], rows)
+    let mut map = with_rows_map(tool, summary, &["path", "line", "text"], rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn brief_result(tool: &str, payload: Value) -> Value {
@@ -519,7 +600,7 @@ fn brief_result(tool: &str, payload: Value) -> Value {
         &payload,
         &["task", "keywords", "max_results", "confidence", "note"],
     );
-    trim_summary_keywords(&mut summary, 8);
+    trim_summary_keywords(&mut summary, 5);
     let mut map = base(tool, summary);
     let symbol_rows = payload
         .get("relevant_symbols")
@@ -554,21 +635,44 @@ fn brief_result(tool: &str, payload: Value) -> Value {
         map.insert("snippet_cols".to_string(), cols(&["path", "line", "text"]));
         map.insert("snippets".to_string(), array(snippet_rows));
     }
-    insert_next_steps(&mut map, brief_next_steps(&payload));
+    apply_path_compression(
+        &mut map,
+        &[
+            PathTarget::Rows {
+                cols_key: "symbol_cols",
+                rows_key: "symbols",
+                col: "path",
+            },
+            PathTarget::Rows {
+                cols_key: "snippet_cols",
+                rows_key: "snippets",
+                col: "path",
+            },
+        ],
+    );
+    if should_emit_brief_next(
+        &payload,
+        map.get("symbols").is_none(),
+        map.get("snippets").is_none(),
+    ) {
+        insert_next_steps(&mut map, brief_next_steps(&payload));
+    }
     Value::Object(map)
 }
 
 fn trace_deps_result(tool: &str, payload: Value) -> Value {
-    let summary = pick(&payload, &["path", "direction", "transitive", "count"]);
-    let rows = payload
+    let summary = drop_false_defaults(pick(
+        &payload,
+        &["path", "direction", "transitive", "count"],
+    ));
+    let deps = payload
         .get("dependencies")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .map(|path| row([path.clone()]))
         .collect::<Vec<_>>();
     let mut map = base(tool, summary);
-    insert_rows(&mut map, &["path"], rows);
+    insert_if_kept(&mut map, "deps", array(deps.into_iter().cloned()));
     insert_if_kept(
         &mut map,
         "unresolved_imports",
@@ -577,6 +681,7 @@ fn trace_deps_result(tool: &str, payload: Value) -> Value {
             .cloned()
             .unwrap_or(Value::Null),
     );
+    apply_path_compression(&mut map, &[PathTarget::Array { key: "deps" }]);
     Value::Object(map)
 }
 
@@ -608,16 +713,6 @@ fn edit_result(tool: &str, payload: Value) -> Value {
     if let Some(preview) = payload.get("preview") {
         map.insert("content".to_string(), preview.clone());
     }
-    if let Some(path) = payload.get("path").and_then(Value::as_str) {
-        insert_next_steps(
-            &mut map,
-            [NextStep::new(
-                "read",
-                json!({ "path": path }),
-                "verify file content",
-            )],
-        );
-    }
     Value::Object(map)
 }
 
@@ -633,7 +728,16 @@ fn changes_result(tool: &str, payload: Value) -> Value {
         .flatten()
         .map(|change| row([get(change, "seq"), get(change, "path"), get(change, "op")]))
         .collect::<Vec<_>>();
-    with_rows(tool, summary, &["seq", "path", "op"], rows)
+    let mut map = with_rows_map(tool, summary, &["seq", "path", "op"], rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn recent_result(tool: &str, payload: Value) -> Value {
@@ -645,12 +749,16 @@ fn recent_result(tool: &str, payload: Value) -> Value {
         .flatten()
         .map(file_row)
         .collect::<Vec<_>>();
-    with_rows(
-        tool,
-        summary,
-        &["path", "lang", "lines", "bytes", "symbols"],
-        rows,
-    )
+    let mut map = with_rows_map(tool, summary, &["path", "lang", "lines", "symbols"], rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn summary_only_result(tool: &str, payload: Value) -> Value {
@@ -665,21 +773,33 @@ fn audit_result(tool: &str, payload: Value) -> Value {
             insert_if_kept(&mut summary, key, value.clone());
         }
     }
-    let rows = deduped_audit_rows(&payload);
+    let all_rows = deduped_audit_rows(&payload);
+    let total_rows = all_rows.len();
+    let rows = all_rows.into_iter().take(12).collect::<Vec<_>>();
     let mut map = base(tool, Value::Object(summary));
+    if total_rows > rows.len() {
+        map.insert("shown_findings".to_string(), n(rows.len()));
+    }
     insert_audit_rule_rows(&mut map, audit_rule_groups(&payload));
     insert_rows(
         &mut map,
-        &[
-            "id",
-            "severity",
-            "rule",
-            "path",
-            "line",
-            "title",
-            "instances",
-        ],
+        &["severity", "rule", "path", "line", "title", "instances"],
         rows,
+    );
+    apply_path_compression(
+        &mut map,
+        &[
+            PathTarget::Rows {
+                cols_key: "rule_cols",
+                rows_key: "rules",
+                col: "top_path",
+            },
+            PathTarget::Rows {
+                cols_key: "cols",
+                rows_key: "rows",
+                col: "path",
+            },
+        ],
     );
     insert_next_steps(&mut map, audit_grouped_next_steps(&payload));
     Value::Object(map)
@@ -735,13 +855,31 @@ fn pipeline_result(tool: &str, payload: Value) -> Value {
         "reads" => &["path", "content"][..],
         _ => &["value"][..],
     };
-    with_rows(tool, summary, columns, rows)
+    let mut map = with_rows_map(tool, summary, columns, rows);
+    apply_path_compression(
+        &mut map,
+        &[PathTarget::Rows {
+            cols_key: "cols",
+            rows_key: "rows",
+            col: "path",
+        }],
+    );
+    Value::Object(map)
 }
 
 fn with_rows(tool: &str, summary: Value, columns: &[&str], rows: Vec<Value>) -> Value {
+    Value::Object(with_rows_map(tool, summary, columns, rows))
+}
+
+fn with_rows_map(
+    tool: &str,
+    summary: Value,
+    columns: &[&str],
+    rows: Vec<Value>,
+) -> Map<String, Value> {
     let mut map = base(tool, summary);
     insert_rows(&mut map, columns, rows);
-    Value::Object(map)
+    map
 }
 
 fn insert_rows(map: &mut Map<String, Value>, columns: &[&str], rows: Vec<Value>) {
@@ -752,12 +890,153 @@ fn insert_rows(map: &mut Map<String, Value>, columns: &[&str], rows: Vec<Value>)
     map.insert("rows".to_string(), array(rows));
 }
 
+fn apply_path_compression(map: &mut Map<String, Value>, targets: &[PathTarget<'_>]) {
+    if map.contains_key("root") {
+        return;
+    }
+
+    let mut paths = Vec::new();
+    for target in targets {
+        collect_target_paths(map, *target, &mut paths);
+    }
+    let Some(root) = common_path_root(&paths) else {
+        return;
+    };
+    if !path_root_saves_tokens(&root, &paths) {
+        return;
+    }
+
+    for target in targets {
+        strip_target_paths(map, *target, &root);
+    }
+    map.insert("root".to_string(), s(root));
+}
+
+fn collect_target_paths(map: &Map<String, Value>, target: PathTarget<'_>, out: &mut Vec<String>) {
+    match target {
+        PathTarget::Rows {
+            cols_key,
+            rows_key,
+            col,
+        } => {
+            let Some(index) = column_index(map, cols_key, col) else {
+                return;
+            };
+            for row in map
+                .get(rows_key)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(path) = row
+                    .as_array()
+                    .and_then(|values| values.get(index))
+                    .and_then(Value::as_str)
+                    .filter(|path| path_is_compressible(path))
+                {
+                    out.push(path.to_string());
+                }
+            }
+        }
+        PathTarget::Array { key } => {
+            for item in map.get(key).and_then(Value::as_array).into_iter().flatten() {
+                if let Some(path) = item.as_str().filter(|path| path_is_compressible(path)) {
+                    out.push(path.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn strip_target_paths(map: &mut Map<String, Value>, target: PathTarget<'_>, root: &str) {
+    match target {
+        PathTarget::Rows {
+            cols_key,
+            rows_key,
+            col,
+        } => {
+            let Some(index) = column_index(map, cols_key, col) else {
+                return;
+            };
+            for row in map
+                .get_mut(rows_key)
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                let Some(values) = row.as_array_mut() else {
+                    continue;
+                };
+                let Some(value) = values.get_mut(index) else {
+                    continue;
+                };
+                if let Some(path) = value.as_str().and_then(|path| path.strip_prefix(root)) {
+                    *value = s(path);
+                }
+            }
+        }
+        PathTarget::Array { key } => {
+            for item in map
+                .get_mut(key)
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(path) = item.as_str().and_then(|path| path.strip_prefix(root)) {
+                    *item = s(path);
+                }
+            }
+        }
+    }
+}
+
+fn column_index(map: &Map<String, Value>, cols_key: &str, col: &str) -> Option<usize> {
+    map.get(cols_key)
+        .and_then(Value::as_array)?
+        .iter()
+        .position(|value| value.as_str() == Some(col))
+}
+
+fn common_path_root(paths: &[String]) -> Option<String> {
+    if paths.len() < 2 {
+        return None;
+    }
+    let mut prefix = paths.first()?.as_str();
+    for path in &paths[1..] {
+        let common_len = prefix
+            .char_indices()
+            .zip(path.char_indices())
+            .take_while(|((_, left), (_, right))| left == right)
+            .last()
+            .map(|((index, ch), _)| index + ch.len_utf8())
+            .unwrap_or(0);
+        prefix = &prefix[..common_len];
+        if prefix.is_empty() {
+            return None;
+        }
+    }
+    let slash = prefix.rfind('/')?;
+    let root = &prefix[..=slash];
+    if root.is_empty() || paths.iter().any(|path| path == root) {
+        None
+    } else {
+        Some(root.to_string())
+    }
+}
+
+fn path_root_saves_tokens(root: &str, paths: &[String]) -> bool {
+    root.len().saturating_mul(paths.len()) > root.len().saturating_add(6)
+}
+
+fn path_is_compressible(path: &str) -> bool {
+    !path.is_empty() && !path.starts_with('/') && !path.contains("://") && path.contains('/')
+}
+
 fn file_row(file: &Value) -> Value {
     row([
         get(file, "path"),
         get(file, "language"),
         get(file, "line_count"),
-        get(file, "byte_size"),
         get(file, "symbol_count"),
     ])
 }
@@ -771,7 +1050,6 @@ fn word_ref_row(result: &Value) -> Value {
         get(result, "kind"),
         get(result, "path"),
         line_value(result),
-        get(result, "score"),
         text_value(result),
     ])
 }
@@ -785,11 +1063,24 @@ fn line_value(value: &Value) -> Value {
 }
 
 fn text_value(value: &Value) -> Value {
-    value
+    let raw = value
         .get("text")
         .or_else(|| value.get("line_text"))
         .cloned()
-        .unwrap_or(Value::Null)
+        .unwrap_or(Value::Null);
+    let Some(text) = raw.as_str() else {
+        return raw;
+    };
+    s(compact_text(text, 120))
+}
+
+fn compact_text(text: &str, max_chars: usize) -> String {
+    let compacted = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compacted.chars().count() <= max_chars {
+        return compacted;
+    }
+    let keep = max_chars.saturating_sub(3);
+    format!("{}...", compacted.chars().take(keep).collect::<String>())
 }
 
 fn kind_value(value: &Value) -> Value {
@@ -830,15 +1121,13 @@ fn canonical_symbol_kind(kind: &str) -> Option<&'static str> {
 struct NextStep {
     tool: String,
     args: Value,
-    reason: String,
 }
 
 impl NextStep {
-    fn new(tool: impl Into<String>, args: Value, reason: impl Into<String>) -> Self {
+    fn new(tool: impl Into<String>, args: Value, _reason: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),
             args,
-            reason: reason.into(),
         }
     }
 }
@@ -859,14 +1148,14 @@ fn insert_next_steps(map: &mut Map<String, Value>, steps: impl IntoIterator<Item
             if !seen.insert((step.tool.clone(), args.clone())) {
                 return None;
             }
-            Some(row([s(step.tool), s(args), s(step.reason)]))
+            Some(row([s(step.tool), step.args]))
         })
         .collect::<Vec<_>>();
 
     if rows.is_empty() {
         return;
     }
-    map.insert("next_cols".to_string(), cols(&["tool", "args", "reason"]));
+    map.insert("next_cols".to_string(), cols(&["tool", "args"]));
     map.insert("next".to_string(), array(rows));
 }
 
@@ -917,6 +1206,26 @@ fn brief_next_steps(payload: &Value) -> Vec<NextStep> {
             }
         })
         .collect()
+}
+
+fn should_emit_brief_next(payload: &Value, no_symbols: bool, no_snippets: bool) -> bool {
+    if no_symbols && no_snippets {
+        return true;
+    }
+    if payload
+        .get("confidence")
+        .and_then(Value::as_str)
+        .is_some_and(|confidence| confidence.eq_ignore_ascii_case("low"))
+    {
+        return true;
+    }
+    payload
+        .get("note")
+        .and_then(Value::as_str)
+        .is_some_and(|note| {
+            let note = note.to_ascii_lowercase();
+            note.contains("low-confidence") || note.contains("scope")
+        })
 }
 
 #[derive(Clone)]
@@ -1018,7 +1327,6 @@ fn deduped_audit_rows(payload: &Value) -> Vec<Value> {
         indexes.insert(key, entries.len());
         entries.push((
             vec![
-                get(finding, "id"),
                 get(finding, "severity"),
                 get(finding, "rule"),
                 get(finding, "path"),
@@ -1057,8 +1365,8 @@ fn audit_dedupe_key(finding: &Value) -> String {
 }
 
 fn audit_grouped_next_steps(payload: &Value) -> Vec<NextStep> {
-    const MAX_PER_RULE: usize = 2;
-    const MAX_TOTAL: usize = 6;
+    const MAX_PER_RULE: usize = 1;
+    const MAX_TOTAL: usize = 2;
 
     let groups = audit_rule_groups(payload);
     let findings = payload
@@ -1231,6 +1539,25 @@ fn pick(payload: &Value, keys: &[&str]) -> Value {
     Value::Object(map)
 }
 
+fn drop_false_defaults(value: Value) -> Value {
+    let Value::Object(mut map) = value else {
+        return value;
+    };
+    for key in [
+        "compact",
+        "paths_only",
+        "regex",
+        "scope",
+        "transitive",
+        "truncated",
+    ] {
+        if map.get(key).and_then(Value::as_bool) == Some(false) {
+            map.remove(key);
+        }
+    }
+    Value::Object(map)
+}
+
 fn without_keys(payload: &Value, keys: &[&str]) -> Value {
     let Some(obj) = payload.as_object() else {
         return payload.clone();
@@ -1387,11 +1714,8 @@ mod tests {
             }),
         );
 
-        assert_eq!(
-            value["cols"],
-            json!(["path", "lang", "lines", "bytes", "symbols"])
-        );
-        assert_eq!(value["rows"][0], json!(["src/lib.rs", "rust", 7, 120, 2]));
+        assert_eq!(value["cols"], json!(["path", "lang", "lines", "symbols"]));
+        assert_eq!(value["rows"][0], json!(["src/lib.rs", "rust", 7, 2]));
     }
 
     #[test]
@@ -1410,11 +1734,13 @@ mod tests {
             }),
         );
 
-        assert_eq!(value["summary"]["keyword_count"], 9);
-        assert_eq!(value["summary"]["keywords"].as_array().unwrap().len(), 8);
-        assert_eq!(value["next_cols"], json!(["tool", "args", "reason"]));
+        assert_eq!(value["keyword_count"], 9);
+        assert_eq!(value["keywords"].as_array().unwrap().len(), 5);
+        assert_eq!(value["next_cols"], json!(["tool", "args"]));
         assert_eq!(value["next"][0][0], "symbol_search");
+        assert_eq!(value["next"][0][1]["query"], "create project agent");
         assert_eq!(value["next"][1][0], "text_search");
+        assert_eq!(value["next"][1][1]["query"], "create project agent");
     }
 
     #[test]
@@ -1444,20 +1770,16 @@ mod tests {
             }),
         );
 
-        assert_eq!(
-            value["cols"],
-            json!(["kind", "path", "line", "score", "text"])
-        );
+        assert_eq!(value["cols"], json!(["kind", "path", "line", "text"]));
         assert_eq!(value["rows"][0][0], "definition");
-        assert_eq!(value["rows"][0][3], 120);
-        assert_eq!(value["summary"]["kind_facets"][0]["kind"], "definition");
-        assert_eq!(value["next_cols"], json!(["tool", "args", "reason"]));
+        assert_eq!(value["rows"][0][3], "struct Agent;");
+        assert!(value.get("kind_facets").is_none());
+        assert_eq!(value["next_cols"], json!(["tool", "args"]));
         assert_eq!(value["next"][0][0], "word_refs");
-        let args: Value = serde_json::from_str(value["next"][0][1].as_str().unwrap()).unwrap();
-        assert_eq!(args["word"], "Agent");
-        assert_eq!(args["cursor"], 1);
-        assert_eq!(args["path_prefix"], "packages/core");
-        assert_eq!(args["path_glob"], "**/*.rs");
+        assert_eq!(value["next"][0][1]["word"], "Agent");
+        assert_eq!(value["next"][0][1]["cursor"], 1);
+        assert_eq!(value["next"][0][1]["path_prefix"], "packages/core");
+        assert_eq!(value["next"][0][1]["path_glob"], "**/*.rs");
     }
 
     #[test]
@@ -1493,22 +1815,13 @@ mod tests {
         );
         assert_eq!(
             value["cols"],
-            json!([
-                "id",
-                "severity",
-                "rule",
-                "path",
-                "line",
-                "title",
-                "instances"
-            ])
+            json!(["severity", "rule", "path", "line", "title", "instances"])
         );
         assert_eq!(value["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(value["rows"][0][6], 2);
-        assert_eq!(value["next"].as_array().unwrap().len(), 2);
+        assert_eq!(value["rows"][0][5], 2);
+        assert_eq!(value["next"].as_array().unwrap().len(), 1);
         assert_eq!(value["next"][0][0], "trace_deps");
-        let args: Value = serde_json::from_str(value["next"][0][1].as_str().unwrap()).unwrap();
-        assert_eq!(args["direction"], "depends_on");
+        assert_eq!(value["next"][0][1]["direction"], "depends_on");
     }
 
     #[test]
@@ -1565,35 +1878,13 @@ mod tests {
         );
 
         let next = value["next"].as_array().unwrap();
-        assert_eq!(next.len(), 6);
+        assert_eq!(next.len(), 2);
         assert_eq!(next[0][0], "trace_deps");
-        let first_args: Value = serde_json::from_str(next[0][1].as_str().unwrap()).unwrap();
-        assert_eq!(first_args["path"], "src/a.rs");
-        assert_eq!(first_args["direction"], "depends_on");
-        assert!(next.iter().any(|row| {
-            let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
-            row[0] == "outline" && args["path"] == "src/core.rs"
-        }));
-        assert!(next.iter().any(|row| {
-            let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
-            row[0] == "trace_deps"
-                && args["path"] == "src/core.rs"
-                && args["direction"] == "imported_by"
-        }));
-
-        let symbol_read_args: Value = next
+        assert_eq!(next[0][1]["path"], "src/a.rs");
+        assert_eq!(next[0][1]["direction"], "depends_on");
+        assert!(next
             .iter()
-            .find_map(|row| {
-                let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
-                (row[0] == "read" && args["path"] == "src/big.rs").then_some(args)
-            })
-            .unwrap();
-        assert_eq!(symbol_read_args["line_start"], 10);
-        assert_eq!(symbol_read_args["line_end"], 209);
-        assert!(next.iter().any(|row| {
-            let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
-            row[0] == "callers" && args["name"] == "build"
-        }));
+            .any(|row| { row[0] == "outline" && row[1]["path"] == "src/core.rs" }));
     }
 
     #[test]
@@ -1641,26 +1932,67 @@ mod tests {
         );
 
         let next = value["next"].as_array().unwrap();
-        assert_eq!(next.len(), 4);
-        assert!(next.iter().any(|row| {
-            let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
-            row[0] == "outline" && args["path"] == "src/shared.ts"
-        }));
-        assert!(next.iter().any(|row| {
-            let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
-            row[0] == "trace_deps"
-                && args["path"] == "src/core.ts"
-                && args["direction"] == "imported_by"
-        }));
+        assert_eq!(next.len(), 2);
+        assert!(next
+            .iter()
+            .any(|row| { row[0] == "outline" && row[1]["path"] == "src/shared.ts" }));
         let hotspot_outlines = next
             .iter()
             .filter(|row| {
-                let args: Value = serde_json::from_str(row[1].as_str().unwrap()).unwrap();
                 row[0] == "outline"
-                    && matches!(args["path"].as_str(), Some("src/shared.ts" | "src/core.ts"))
+                    && matches!(
+                        row[1]["path"].as_str(),
+                        Some("src/shared.ts" | "src/core.ts")
+                    )
             })
             .count();
         assert_eq!(hotspot_outlines, 1);
+    }
+
+    #[test]
+    fn glob_agent_output_uses_direct_paths_and_compresses_root() {
+        let value = agent_result_value(
+            "glob",
+            json!({
+                "pattern": "src/*.ts",
+                "count": 4,
+                "paths": [
+                    "src/app.ts",
+                    "src/web_agent.ts",
+                    "src/web_config.ts",
+                    "src/web_runtime.ts"
+                ]
+            }),
+        );
+
+        assert_eq!(value["root"], "src/");
+        assert!(value.get("cols").is_none());
+        assert_eq!(
+            value["paths"],
+            json!(["app.ts", "web_agent.ts", "web_config.ts", "web_runtime.ts"])
+        );
+    }
+
+    #[test]
+    fn search_agent_output_trims_long_text_cells() {
+        let value = agent_result_value(
+            "text_search",
+            json!({
+                "query": "needle",
+                "count": 1,
+                "limit": 1,
+                "results": [{
+                    "path": "src/main.rs",
+                    "line_num": 7,
+                    "line_text": "needle   followed by a very long line that keeps going and going and going and going and going and going and going and going and going"
+                }]
+            }),
+        );
+
+        let text = value["rows"][0][2].as_str().unwrap();
+        assert!(text.len() <= 120);
+        assert!(text.contains("needle followed"));
+        assert!(text.ends_with("..."));
     }
 
     #[test]
@@ -1679,7 +2011,7 @@ mod tests {
             }),
         );
 
-        assert_eq!(value["summary"]["would_create"], true);
-        assert_eq!(value["next"][0][0], "read");
+        assert_eq!(value["would_create"], true);
+        assert!(value.get("next").is_none());
     }
 }

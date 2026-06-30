@@ -86,41 +86,53 @@ project with known ground truth. Token counts are estimated from default
 structured-text CLI output and default MCP text content; decoded structured
 values are used internally for stable correctness checks.
 
-Run the retrieval benchmark:
+Run the benchmark suite:
 
 ```bash
 cargo test --test agent_retrieval_benchmark -- --nocapture
+cargo test --test agent_cli_output_format_benchmark -- --nocapture
+cargo test --test agent_edit_safety_benchmark -- --nocapture
+cargo test --test agent_mcp_session_benchmark -- --nocapture
+cargo test --test agent_maintenance_benchmark -- --nocapture
 ```
 
-Latest local result:
+Latest local result, June 30, 2026:
 
-| Suite | Accuracy | Lexa est. tokens | Baseline est. tokens | Aggregate reduction |
-| --- | ---: | ---: | ---: | ---: |
-| Retrieval | 13/13 | 2017 | 8397 | 76.0% |
+| Suite | Checks | Lexa est. tokens | Baseline est. tokens | Aggregate reduction | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Retrieval | 13/13 | 1678 | 8397 | 80.0% | Indexed answers against listing, grep, and candidate reads. |
+| CLI output format | 13 cases | 1676 | n/a | n/a | Current structured-text CLI envelope across retrieval commands. |
+| Edit safety | 11/11 | 709 | n/a | n/a | Hash-aware reads, dry runs, patches, creates, and rejection paths. |
+| MCP session | 5/5 | 281 | n/a | n/a | Persistent MCP session edits and state queries. |
+| Maintenance | 5/5 | 611 | n/a | n/a | Recent files, status, reindex, audit, and clear-index. |
 
-Retrieval correctness: **13/13 tasks passed**.
+Correctness checks: **34/34 passed**. The CLI output format suite separately
+measures 13 command outputs and validates that each decodes as the expected
+structured-text tool result.
 
-Detailed result:
+Detailed retrieval result:
 
 Retrieval baselines model the non-indexed workflow an agent would usually use:
 recursive file listing, grep-style text search, and reading candidate files when
-grep alone cannot answer the question.
+grep alone cannot answer the question. Safety and state suites do not have a
+meaningful aggregate grep/read baseline, so they report correctness and token
+envelope only.
 
 | Suite | Task | Tool | Compared against | Lexa est. tokens | Baseline est. tokens | Reduction | Correct |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| Retrieval | filtered file overview | `files` | recursive file listing filtered to `src/**/*.rs` | 123 | 32 | -284.4% | true |
-| Retrieval | directory children | `list` | recursive file listing under `src` | 167 | 52 | -221.2% | true |
-| Retrieval | glob paths | `glob` | file listing filtered to `src/*.ts` | 52 | 20 | -160.0% | true |
-| Retrieval | fuzzy path | `path_search` | full file listing for agent-side fuzzy matching | 34 | 129 | 73.6% | true |
-| Retrieval | scoped text search | `text_search` | scoped grep plus candidate file read | 200 | 105 | -90.5% | true |
-| Retrieval | exact word refs | `word_refs` | grep exact word across project | 364 | 274 | -32.8% | true |
-| Retrieval | exact definition | `symbol_defs` | grep symbol name plus candidate file reads | 89 | 1768 | 95.0% | true |
-| Retrieval | fuzzy symbol | `symbol_search` | grep query terms plus candidate file reads | 93 | 1462 | 93.6% | true |
-| Retrieval | callers | `callers` | grep symbol name plus candidate file reads | 339 | 945 | 64.1% | true |
-| Retrieval | outline | `outline` | full source file read | 117 | 107 | -9.3% | true |
-| Retrieval | dependencies | `trace_deps` | grep imports/requires plus candidate file read | 54 | 113 | 52.2% | true |
-| Retrieval | brief | `brief` | grep query terms plus candidate file reads | 243 | 2445 | 90.1% | true |
-| Retrieval | composed query | `pipeline` | grep symbol name plus candidate file reads | 142 | 945 | 85.0% | true |
+| Retrieval | filtered file overview | `files` | recursive file listing filtered to `src/**/*.rs` | 85 | 32 | -165.6% | true |
+| Retrieval | directory children | `list` | recursive file listing under `src` | 102 | 52 | -96.2% | true |
+| Retrieval | glob paths | `glob` | file listing filtered to `src/*.ts` | 30 | 20 | -50.0% | true |
+| Retrieval | fuzzy path | `path_search` | full file listing for agent-side fuzzy matching | 28 | 129 | 78.3% | true |
+| Retrieval | scoped text search | `text_search` | scoped grep plus candidate file read | 177 | 105 | -68.6% | true |
+| Retrieval | exact word refs | `word_refs` | grep exact word across project | 304 | 274 | -10.9% | true |
+| Retrieval | exact definition | `symbol_defs` | grep symbol name plus candidate file reads | 48 | 1768 | 97.3% | true |
+| Retrieval | fuzzy symbol | `symbol_search` | grep query terms plus candidate file reads | 86 | 1462 | 94.1% | true |
+| Retrieval | callers | `callers` | grep symbol name plus candidate file reads | 330 | 945 | 65.1% | true |
+| Retrieval | outline | `outline` | full source file read | 104 | 107 | 2.8% | true |
+| Retrieval | dependencies | `trace_deps` | grep imports/requires plus candidate file read | 32 | 113 | 71.7% | true |
+| Retrieval | brief | `brief` | grep query terms plus candidate file reads | 220 | 2445 | 91.0% | true |
+| Retrieval | composed query | `pipeline` | grep symbol name plus candidate file reads | 132 | 945 | 86.0% | true |
 
 ## Website
 

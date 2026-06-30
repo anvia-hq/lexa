@@ -135,7 +135,7 @@ fn measure_case(project: &Path, case: &CliCase) -> FormatBenchResult {
     let output = run_lexa(project, case.args).stdout;
     let decoded = parse_toon(&output);
     assert_eq!(decoded["tool"], case.tool);
-    assert_eq!(decoded["ok"], true);
+    assert!(decoded.get("ok").is_none() || decoded["ok"] == true);
 
     FormatBenchResult {
         task: case.task,

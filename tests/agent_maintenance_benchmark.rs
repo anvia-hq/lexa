@@ -35,7 +35,7 @@ fn recent_task(project: &Path) -> BenchResult {
         "src/recent.rs",
         "pub fn recently_added() -> usize { 7 }\n",
     );
-    let args = ["recent", "--limit", "5"];
+    let args = ["recent", "--limit", "1"];
     let lexa = run_lexa(project, &args);
     let measured = run_lexa_text_for_json_args(project, &args);
     let json = parse_json(&lexa.stdout);

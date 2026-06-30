@@ -11,6 +11,8 @@
 
 - Improved agent-oriented TOON output and audit ranking.
 - Improved brief source ranking for more useful task context.
+- Reduced structured text token overhead with flattened success metadata, shared path roots, direct path arrays, trimmed search text, conditional next steps, and triage-first audit output.
+- Refreshed the public benchmark docs and site page to cover retrieval, CLI output format, edit safety, MCP session, and maintenance suites.
 
 ## v0.8.0 - 2026-06-25
 

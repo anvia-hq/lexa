@@ -49,9 +49,9 @@ fn mcp_patch_task(session: &mut McpSession, project: &Path) -> BenchResult {
     let payload = tool_payload(&response);
     let content = std::fs::read_to_string(project.join("src/app.rs")).unwrap();
     let correct = payload["tool"] == "patch"
-        && payload["summary"]["path"] == "src/app.rs"
-        && payload["summary"]["changed"] == true
-        && payload["summary"].get("hash").is_some()
+        && payload["path"] == "src/app.rs"
+        && payload["changed"] == true
+        && payload.get("hash").is_some()
         && content.contains("session_patch_marker");
     bench_result_against(
         SUITE,
@@ -76,8 +76,8 @@ fn mcp_create_task(session: &mut McpSession, project: &Path) -> BenchResult {
     let payload = tool_payload(&response);
     let content = std::fs::read_to_string(project.join("src/session_created.rs")).unwrap();
     let correct = payload["tool"] == "create"
-        && payload["summary"]["path"] == "src/session_created.rs"
-        && payload["summary"]["changed"] == true
+        && payload["path"] == "src/session_created.rs"
+        && payload["changed"] == true
         && content.contains("session_created");
     bench_result_against(
         SUITE,
@@ -127,9 +127,9 @@ fn mcp_status_task(session: &mut McpSession) -> BenchResult {
     let response = session.call_tool("status", json!({}));
     let text = tool_text(&response);
     let payload = tool_payload(&response);
-    let correct = payload["summary"]["seq"].as_u64().unwrap() >= 2
-        && payload["summary"]["graph"]["exists"] == true
-        && payload["summary"]["change_history_persisted"] == false;
+    let correct = payload["seq"].as_u64().unwrap() >= 2
+        && payload["graph"]["exists"] == true
+        && payload["change_history_persisted"] == false;
     bench_result_against(
         SUITE,
         "session status state",

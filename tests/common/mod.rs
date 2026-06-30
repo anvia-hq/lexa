@@ -148,13 +148,31 @@ fn expand_agent_toon(value: Value) -> Value {
 
     match tool {
         "files" | "recent" => {
-            map.insert("files".to_string(), rows_as_objects(&value, file_key));
+            let mut files = rows_as_objects(&value, file_key);
+            if let Some(language) = value
+                .get("filters")
+                .and_then(|filters| filters.get("language"))
+                .cloned()
+            {
+                if let Some(items) = files.as_array_mut() {
+                    for item in items {
+                        if item.get("language").is_none() {
+                            item["language"] = language.clone();
+                        }
+                    }
+                }
+            }
+            map.insert("files".to_string(), files);
         }
         "list" => {
             map.insert("entries".to_string(), rows_as_objects(&value, list_key));
         }
         "glob" => {
-            map.insert("paths".to_string(), first_col_array(&value));
+            let paths = value
+                .get("paths")
+                .map(|_| string_array(&value, "paths"))
+                .unwrap_or_else(|| first_col_array(&value));
+            map.insert("paths".to_string(), paths);
         }
         "path_search" => {
             map.insert("results".to_string(), rows_as_objects(&value, identity_key));
@@ -175,7 +193,11 @@ fn expand_agent_toon(value: Value) -> Value {
             map.insert("symbols".to_string(), rows_as_objects(&value, identity_key));
         }
         "trace_deps" => {
-            map.insert("dependencies".to_string(), first_col_array(&value));
+            let dependencies = value
+                .get("deps")
+                .map(|_| string_array(&value, "deps"))
+                .unwrap_or_else(|| first_col_array(&value));
+            map.insert("dependencies".to_string(), dependencies);
         }
         "brief" => {
             if let Some(symbols) =
@@ -207,7 +229,12 @@ fn expand_agent_toon(value: Value) -> Value {
 }
 
 fn rows_as_objects(value: &Value, rename: fn(&str) -> &str) -> Value {
-    rows_as_objects_with_cols(cols(value, "cols"), value.get("rows"), rename)
+    rows_as_objects_with_cols(
+        cols(value, "cols"),
+        value.get("rows"),
+        rename,
+        root_prefix(value),
+    )
 }
 
 fn rows_as_objects_from(
@@ -221,6 +248,7 @@ fn rows_as_objects_from(
         cols(value, cols_key),
         Some(rows),
         rename,
+        root_prefix(value),
     ))
 }
 
@@ -228,6 +256,7 @@ fn rows_as_objects_with_cols(
     cols: Vec<String>,
     rows: Option<&Value>,
     rename: fn(&str) -> &str,
+    root: Option<&str>,
 ) -> Value {
     Value::Array(
         rows.and_then(Value::as_array)
@@ -238,7 +267,8 @@ fn rows_as_objects_with_cols(
                 let values = row.as_array().cloned().unwrap_or_default();
                 for (index, col) in cols.iter().enumerate() {
                     let value = values.get(index).cloned().unwrap_or(Value::Null);
-                    object.insert(rename(col).to_string(), value);
+                    let key = rename(col).to_string();
+                    object.insert(key.clone(), expand_path_value(root, &key, value));
                 }
                 Value::Object(object)
             })
@@ -247,6 +277,7 @@ fn rows_as_objects_with_cols(
 }
 
 fn first_col_array(value: &Value) -> Value {
+    let root = root_prefix(value);
     Value::Array(
         value
             .get("rows")
@@ -254,6 +285,21 @@ fn first_col_array(value: &Value) -> Value {
             .into_iter()
             .flatten()
             .filter_map(|row| row.as_array().and_then(|items| items.first()).cloned())
+            .map(|value| expand_path_value(root, "path", value))
+            .collect(),
+    )
+}
+
+fn string_array(value: &Value, key: &str) -> Value {
+    let root = root_prefix(value);
+    Value::Array(
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .map(|value| expand_path_value(root, "path", value))
             .collect(),
     )
 }
@@ -275,6 +321,7 @@ fn text_search_rows(value: &Value) -> Value {
 }
 
 fn symbol_def_rows(value: &Value) -> Value {
+    let root = root_prefix(value);
     Value::Array(
         value
             .get("rows")
@@ -284,7 +331,11 @@ fn symbol_def_rows(value: &Value) -> Value {
             .map(|row| {
                 let values = row.as_array().cloned().unwrap_or_default();
                 json!({
-                    "path": values.first().cloned().unwrap_or(Value::Null),
+                    "path": expand_path_value(
+                        root,
+                        "path",
+                        values.first().cloned().unwrap_or(Value::Null)
+                    ),
                     "symbol": {
                         "line_start": values.get(1).cloned().unwrap_or(Value::Null),
                         "line_end": values.get(2).cloned().unwrap_or(Value::Null),
@@ -296,6 +347,26 @@ fn symbol_def_rows(value: &Value) -> Value {
             })
             .collect(),
     )
+}
+
+fn root_prefix(value: &Value) -> Option<&str> {
+    value.get("root").and_then(Value::as_str)
+}
+
+fn expand_path_value(root: Option<&str>, key: &str, value: Value) -> Value {
+    let Some(root) = root else {
+        return value;
+    };
+    if !matches!(key, "path" | "top_path") {
+        return value;
+    }
+    let Some(path) = value.as_str() else {
+        return value;
+    };
+    if path.is_empty() || path.starts_with(root) || path.starts_with('/') || path.contains("://") {
+        return value;
+    }
+    Value::String(format!("{root}{path}"))
 }
 
 fn next_rows(value: &Value) -> Option<Value> {
@@ -468,14 +539,19 @@ fn collect_files(project: &Path, dir: &Path, files: &mut Vec<PathBuf>) {
 pub fn print_report(suite: &str, results: &[BenchResult]) {
     let passed = results.iter().filter(|result| result.correct).count();
     let lexa_tokens: usize = results.iter().map(|result| result.lexa_tokens).sum();
+    let baseline_count = results
+        .iter()
+        .filter(|result| result.baseline_tokens.is_some())
+        .count();
     let baseline_tokens: usize = results
         .iter()
         .filter_map(|result| result.baseline_tokens)
         .sum();
-    let reduction = if baseline_tokens == 0 {
-        None
-    } else {
+    let complete_baseline = baseline_count == results.len();
+    let reduction = if complete_baseline && baseline_tokens > 0 {
         Some(1.0 - (lexa_tokens as f64 / baseline_tokens as f64))
+    } else {
+        None
     };
 
     println!("\nAgent benchmark v2: {suite}");
@@ -490,6 +566,8 @@ pub fn print_report(suite: &str, results: &[BenchResult]) {
     );
     if let Some(reduction) = reduction {
         println!("aggregate reduction: {:.1}%", reduction * 100.0);
+    } else if baseline_count > 0 {
+        println!("baseline coverage: {baseline_count}/{}", results.len());
     }
     println!(
         "| suite | task | tool | compared against | Lexa bytes | baseline bytes | Lexa est. tokens | baseline est. tokens | reduction | correct |"
