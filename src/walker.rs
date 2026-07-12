@@ -123,9 +123,7 @@ pub fn walk_single_file_meta(
 pub fn relative_path(root: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<String> {
     let root = root.as_ref();
     let path = path.as_ref();
-    path.strip_prefix(root)
-        .ok()
-        .map(|relative| relative.to_string_lossy().to_string())
+    path.strip_prefix(root).ok().map(path_to_project_string)
 }
 
 fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
@@ -139,7 +137,7 @@ fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
     if should_skip_path(relative_path) {
         return None;
     }
-    let relative = relative_path.to_string_lossy().to_string();
+    let relative = path_to_project_string(relative_path);
 
     let language = detect_language(&relative);
     let mut indexable = true;
@@ -175,6 +173,16 @@ fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
         indexable,
         change_ns: metadata_change_ns(&metadata),
     })
+}
+
+fn path_to_project_string(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 #[cfg(unix)]
@@ -270,4 +278,27 @@ fn is_resolvable_asset_extension(ext: &str) -> bool {
         ext,
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" | "avif"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn walked_paths_use_project_separators() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let path = src.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        let files = walk_project_meta(root.path());
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(
+            relative_path(root.path(), &path),
+            Some("src/main.rs".to_string())
+        );
+    }
 }

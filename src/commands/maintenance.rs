@@ -242,8 +242,7 @@ pub(crate) fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
                 if should_reindex {
                     for path in &paths {
                         if let Ok(relative) = path.strip_prefix(&watch_path) {
-                            let relative_str = relative.to_string_lossy().to_string();
-
+                            let relative_str = project_path_string(relative);
                             match kind {
                                 EventKind::Create(_) | EventKind::Modify(_) => {
                                     if let Ok(content) = std::fs::read_to_string(path) {
@@ -278,6 +277,16 @@ pub(crate) fn cmd_watch(path: &str, debounce_ms: u64, cli: &Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn project_path_string(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub(crate) fn cmd_pipeline(pipeline: &[String], cli: &Cli) -> Result<()> {
