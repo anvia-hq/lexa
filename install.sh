@@ -71,6 +71,28 @@ trap cleanup EXIT INT TERM
 
 printf 'Downloading %s...\n' "$url"
 curl -fL --retry 3 --retry-delay 2 -o "$tmp_dir/$archive" "$url"
+checksum_url="https://github.com/$repo/releases/download/$tag/SHA256SUMS"
+curl -fL --retry 3 --retry-delay 2 -o "$tmp_dir/SHA256SUMS" "$checksum_url"
+expected_checksum="$(
+  sed -n "s/^\\([[:xdigit:]]*\\)[[:space:]][[:space:]]*$archive$/\\1/p" "$tmp_dir/SHA256SUMS" |
+    sed -n '1p'
+)"
+if [ -z "$expected_checksum" ]; then
+  printf 'error: checksum file did not contain %s\n' "$archive" >&2
+  exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_checksum="$(sha256sum "$tmp_dir/$archive" | sed 's/[[:space:]].*//')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual_checksum="$(shasum -a 256 "$tmp_dir/$archive" | sed 's/[[:space:]].*//')"
+else
+  printf 'error: sha256sum or shasum is required to verify the download\n' >&2
+  exit 1
+fi
+if [ "$actual_checksum" != "$expected_checksum" ]; then
+  printf 'error: checksum mismatch for %s\n' "$archive" >&2
+  exit 1
+fi
 
 tar -xzf "$tmp_dir/$archive" -C "$tmp_dir"
 binary="$tmp_dir/lexa-${platform}-${asset_version}/lexa"
@@ -95,6 +117,8 @@ case ":$PATH:" in
   *":$install_dir:"*) ;;
   *)
     printf 'Add this directory to PATH to run lexa from anywhere:\n'
+    # $PATH must remain literal in the instruction printed for the user.
+    # shellcheck disable=SC2016
     printf '  export PATH="%s:$PATH"\n' "$install_dir"
     ;;
 esac

@@ -1,4 +1,5 @@
-use hashbrown::HashMap;
+use crate::types::WordIndexSnapshot;
+use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,10 @@ pub struct WordIndex {
     path_to_id: HashMap<String, u32>,
     id_to_path: Vec<String>,
     free_ids: Vec<u32>,
+}
+
+pub(crate) struct PreparedWordIndex {
+    words: Vec<(String, Vec<u32>)>,
 }
 
 impl WordIndex {
@@ -43,31 +48,24 @@ impl WordIndex {
     }
 
     pub fn index_file(&mut self, path: &str, content: &str) {
+        self.index_prepared(path, prepare_word_index(content));
+    }
+
+    pub(crate) fn index_prepared(&mut self, path: &str, prepared: PreparedWordIndex) {
         self.remove_file(path);
 
         let doc_id = self.get_or_create_id(path);
-        let mut words_set: Vec<String> = Vec::new();
-
-        for (line_idx, line) in content.lines().enumerate() {
-            let line_num = (line_idx + 1) as u32;
-            for token in tokenize(line) {
-                let hit = WordHit { doc_id, line_num };
-
-                let entry = self.index.entry(token.clone()).or_default();
-                let should_add = entry
-                    .last()
-                    .is_none_or(|last| last.doc_id != doc_id || last.line_num != line_num);
-                if should_add {
-                    entry.push(hit);
-                }
-
-                if !words_set.contains(&token) {
-                    words_set.push(token);
-                }
-            }
+        let mut file_words = Vec::with_capacity(prepared.words.len());
+        for (word, line_numbers) in prepared.words {
+            let hits = self.index.entry(word.clone()).or_default();
+            hits.extend(
+                line_numbers
+                    .into_iter()
+                    .map(|line_num| WordHit { doc_id, line_num }),
+            );
+            file_words.push(word);
         }
-
-        self.file_words.insert(path.to_string(), words_set);
+        self.file_words.insert(path.to_string(), file_words);
     }
 
     pub fn remove_file(&mut self, path: &str) {
@@ -96,11 +94,16 @@ impl WordIndex {
     }
 
     pub fn search(&self, word: &str) -> Vec<(String, u32)> {
+        self.search_limited(word, usize::MAX)
+    }
+
+    pub(crate) fn search_limited(&self, word: &str, limit: usize) -> Vec<(String, u32)> {
         let word_lower = word.to_lowercase();
         self.index
             .get(&word_lower)
             .map(|hits| {
                 hits.iter()
+                    .take(limit)
                     .filter_map(|h| {
                         self.id_to_path
                             .get(h.doc_id as usize)
@@ -141,6 +144,86 @@ impl WordIndex {
     pub fn unique_word_count(&self) -> usize {
         self.index.len()
     }
+
+    pub(crate) fn snapshot(&self) -> WordIndexSnapshot {
+        let mut postings = self
+            .index
+            .iter()
+            .map(|(word, hits)| {
+                (
+                    word.clone(),
+                    hits.iter().map(|hit| (hit.doc_id, hit.line_num)).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        postings.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut file_words = self
+            .file_words
+            .iter()
+            .map(|(path, words)| (path.clone(), words.clone()))
+            .collect::<Vec<_>>();
+        file_words.sort_by(|left, right| left.0.cmp(&right.0));
+
+        WordIndexSnapshot {
+            postings,
+            file_words,
+            id_to_path: self.id_to_path.clone(),
+        }
+    }
+
+    pub(crate) fn from_snapshot(snapshot: WordIndexSnapshot) -> Option<Self> {
+        if snapshot.id_to_path.len() > u32::MAX as usize {
+            return None;
+        }
+
+        let mut path_to_id = HashMap::new();
+        let mut free_ids = Vec::new();
+        for (id, path) in snapshot.id_to_path.iter().enumerate() {
+            if path.is_empty() {
+                free_ids.push(id as u32);
+            } else if path_to_id.insert(path.clone(), id as u32).is_some() {
+                return None;
+            }
+        }
+
+        let valid_ids = snapshot
+            .id_to_path
+            .iter()
+            .enumerate()
+            .filter_map(|(id, path)| (!path.is_empty()).then_some(id as u32))
+            .collect::<HashSet<_>>();
+
+        let mut index = HashMap::new();
+        for (word, hits) in snapshot.postings {
+            let hits = hits
+                .into_iter()
+                .map(|(doc_id, line_num)| {
+                    valid_ids
+                        .contains(&doc_id)
+                        .then_some(WordHit { doc_id, line_num })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if index.insert(word, hits).is_some() {
+                return None;
+            }
+        }
+
+        let mut file_words = HashMap::new();
+        for (path, words) in snapshot.file_words {
+            if !path_to_id.contains_key(&path) || file_words.insert(path, words).is_some() {
+                return None;
+            }
+        }
+
+        Some(Self {
+            index,
+            file_words,
+            path_to_id,
+            id_to_path: snapshot.id_to_path,
+            free_ids,
+        })
+    }
 }
 
 impl Default for WordIndex {
@@ -168,6 +251,23 @@ pub fn tokenize(line: &str) -> Vec<String> {
     tokens
 }
 
+pub(crate) fn prepare_word_index(content: &str) -> PreparedWordIndex {
+    let mut words = HashMap::<String, Vec<u32>>::new();
+    for (line_idx, line) in content.lines().enumerate() {
+        let line_num = (line_idx + 1) as u32;
+        for token in tokenize(line) {
+            let line_numbers = words.entry(token).or_default();
+            if line_numbers.last().copied() != Some(line_num) {
+                line_numbers.push(line_num);
+            }
+        }
+    }
+
+    let mut words = words.into_iter().collect::<Vec<_>>();
+    words.sort_by(|left, right| left.0.cmp(&right.0));
+    PreparedWordIndex { words }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +281,16 @@ mod tests {
         let results = idx.search("hello");
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|(p, _)| p == "a.rs"));
+    }
+
+    #[test]
+    fn limited_search_stops_before_cloning_unused_hits() {
+        let mut idx = WordIndex::new();
+        for index in 0..10 {
+            idx.index_file(&format!("{index}.rs"), "shared_token");
+        }
+
+        assert_eq!(idx.search_limited("shared_token", 3).len(), 3);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::types::{FileOutline, SymbolLocation};
+use crate::types::{FileOutline, SymbolIndexSnapshot, SymbolLocation};
 use hashbrown::HashMap;
 
 pub struct SymbolIndex {
@@ -59,6 +59,22 @@ impl SymbolIndex {
 
     pub fn symbol_count(&self) -> usize {
         self.index.values().map(|v| v.len()).sum()
+    }
+
+    pub(crate) fn snapshot(&self) -> SymbolIndexSnapshot {
+        let mut entries = self
+            .index
+            .iter()
+            .map(|(name, locations)| (name.clone(), locations.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        SymbolIndexSnapshot { entries }
+    }
+
+    pub(crate) fn from_snapshot(snapshot: SymbolIndexSnapshot) -> Self {
+        Self {
+            index: snapshot.entries.into_iter().collect(),
+        }
     }
 }
 

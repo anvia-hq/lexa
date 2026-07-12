@@ -21,7 +21,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "files",
             summary: "Start here for an overview of the indexed project.",
             description: "Use at the start of exploration to get an overview of the indexed project. Returns indexed file paths with language, line count, and symbol count; supports filtering by path prefix, glob, language, and line-count range. Prefer this over `glob` or `path_search` when you want a broad view rather than a targeted lookup.",
-            input_schema: json!({"type":"object","properties":{"path":{"type":"string","description":"Optional project-relative path prefix."},"path_glob":{"type":"string"},"language":{"type":"string","description":"Language name such as typescript, rust, json, or markdown."},"min_lines":{"type":"integer"},"max_lines":{"type":"integer"},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"required":[]}),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string","description":"Optional project-relative path prefix."},"path_glob":{"type":"string"},"language":{"type":"string","description":"Language name such as typescript, rust, json, or markdown."},"min_lines":{"type":"integer"},"max_lines":{"type":"integer"},"max_results":{"type":"integer","maximum":200},"max":{"type":"integer","maximum":200,"description":"Alias for max_results."}},"required":[]}),
         },
         ToolSpec {
             name: "list",
@@ -39,7 +39,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "path_search",
             summary: "Fuzzy-match indexed file paths.",
             description: "Use when you only know part of a file name and want fuzzy matches. Returns scored file-path matches ordered by relevance with a configurable limit. Use `query` (or aliases `path`/`pattern`/`name`) and `max_results`/`max` (default 20).",
-            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":"Alias for query."},"pattern":{"type":"string","description":"Alias for query."},"name":{"type":"string","description":"Alias for query."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"anyOf":[{"required":["query"]},{"required":["path"]},{"required":["pattern"]},{"required":["name"]}],"required":[]}),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":"Alias for query."},"pattern":{"type":"string","description":"Alias for query."},"name":{"type":"string","description":"Alias for query."},"max_results":{"type":"integer","maximum":200},"max":{"type":"integer","maximum":200,"description":"Alias for max_results."}},"anyOf":[{"required":["query"]},{"required":["path"]},{"required":["pattern"]},{"required":["name"]}],"required":[]}),
         },
         ToolSpec {
             name: "outline",
@@ -57,19 +57,19 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "symbol_search",
             summary: "Fuzzy-match symbol names across the project.",
             description: "Use when you only know part of a symbol name and want fuzzy matches across the project (e.g. `createAgent` matching `createProjectAgent`). Returns scored symbol matches with file, line range, kind, and detail; default limit 20.",
-            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"name":{"type":"string","description":"Alias for query."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."}},"anyOf":[{"required":["query"]},{"required":["name"]}],"required":[]}),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"name":{"type":"string","description":"Alias for query."},"max_results":{"type":"integer","maximum":200},"max":{"type":"integer","maximum":200,"description":"Alias for max_results."}},"anyOf":[{"required":["query"]},{"required":["name"]}],"required":[]}),
         },
         ToolSpec {
             name: "word_refs",
             summary: "Find every occurrence of an exact identifier.",
             description: "Use when you want occurrences of an exact identifier or word, including definitions, imports, calls, and references. Acts like `grep -w` over the indexed word index. Use `word` (or alias `query`) as the exact token. Results are classified, ranked, and paginated; pass `cursor` from `next_cursor` to continue. Supports `path_prefix`/`path` and `path_glob` filters.",
-            input_schema: json!({"type":"object","properties":{"word":{"type":"string"},"query":{"type":"string","description":"Alias for word."},"max_results":{"type":"integer","minimum":1},"max":{"type":"integer","minimum":1,"description":"Alias for max_results."},"cursor":{"type":"integer","minimum":0,"description":"Zero-based result offset for pagination."},"path_prefix":{"type":"string"},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"}},"anyOf":[{"required":["word"]},{"required":["query"]}],"required":[]}),
+            input_schema: json!({"type":"object","properties":{"word":{"type":"string"},"query":{"type":"string","description":"Alias for word."},"max_results":{"type":"integer","minimum":1,"maximum":200},"max":{"type":"integer","minimum":1,"maximum":200,"description":"Alias for max_results."},"cursor":{"type":"integer","minimum":0,"description":"Zero-based result offset for pagination."},"path_prefix":{"type":"string"},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"}},"anyOf":[{"required":["word"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "text_search",
             summary: "Substring or regex search over indexed text.",
             description: "Use as the grep equivalent over indexed text. Supports substring or regex queries with scope (show enclosing symbol), compact (trimmed output), paths-only (`path:line` pairs), and `path_glob` filters. Default limit 20; results include file, line number, and matched text.",
-            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"},"regex":{"type":"boolean"},"scope":{"type":"boolean"},"compact":{"type":"boolean"},"paths_only":{"type":"boolean"},"path_glob":{"type":"string"}},"required":["query"]}),
+            input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","maximum":200},"regex":{"type":"boolean"},"scope":{"type":"boolean"},"compact":{"type":"boolean"},"paths_only":{"type":"boolean"},"path_glob":{"type":"string"}},"required":["query"]}),
         },
         ToolSpec {
             name: "callers",
@@ -81,7 +81,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "brief",
             summary: "Compose a focused context bundle for a code task.",
             description: "Use when you want Lexa to compose a focused context bundle for a specific code task. Best with symbol names, path fragments, or scoped keywords — not free-form natural-language QA. Supports `path_prefix`/`path`, `path_glob`, `language`, and `max_results` (default 10).",
-            input_schema: json!({"type":"object","properties":{"task":{"type":"string"},"query":{"type":"string","description":"Alias for task."},"max_results":{"type":"integer"},"max":{"type":"integer","description":"Alias for max_results."},"path_prefix":{"type":"string","description":"Restrict context to a project-relative path prefix."},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"},"language":{"type":"string"}},"anyOf":[{"required":["task"]},{"required":["query"]}],"required":[]}),
+            input_schema: json!({"type":"object","properties":{"task":{"type":"string"},"query":{"type":"string","description":"Alias for task."},"max_results":{"type":"integer","maximum":200},"max":{"type":"integer","maximum":200,"description":"Alias for max_results."},"path_prefix":{"type":"string","description":"Restrict context to a project-relative path prefix."},"path":{"type":"string","description":"Alias for path_prefix."},"path_glob":{"type":"string"},"language":{"type":"string"}},"anyOf":[{"required":["task"]},{"required":["query"]}],"required":[]}),
         },
         ToolSpec {
             name: "trace_deps",
@@ -117,7 +117,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "recent",
             summary: "List most-recently modified files.",
             description: "Use to find files that were most recently modified, ordered by mtime. Returns path, language, line count, and symbol count. Default limit 10; helpful as a quick \"what just changed\" check.",
-            input_schema: json!({"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}),
+            input_schema: json!({"type":"object","properties":{"limit":{"type":"integer","maximum":200}},"required":[]}),
         },
         ToolSpec {
             name: "status",
@@ -141,7 +141,7 @@ pub static TOOL_SPECS: LazyLock<Vec<ToolSpec>> = LazyLock::new(|| {
             name: "audit",
             summary: "Run a static, review-oriented architecture audit.",
             description: "Use to run a static, review-oriented architecture audit over the indexed project. Reports import cycles, large files, large symbols, dependency hotspots, and (with `include: [\"dead-code\"]`) unused-code candidates. Not a compiler, typechecker, or linter — a clean audit does not mean the project compiles. Supports `config` (TOML path), `since` (git ref), and `max_results`/`max`.",
-            input_schema: json!({"type":"object","properties":{"max_results":{"type":"integer"},"max":{"type":"integer"},"since":{"type":"string"},"config":{"type":"string","description":"Path to a Lexa audit TOML config file, such as lexa.toml or .lexa/audit.toml. This is not a named preset."},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]}),
+            input_schema: json!({"type":"object","properties":{"max_results":{"type":"integer","maximum":1000},"max":{"type":"integer","maximum":1000},"since":{"type":"string"},"config":{"type":"string","description":"Path to a Lexa audit TOML config file, such as lexa.toml or .lexa/audit.toml. This is not a named preset."},"no_config":{"type":"boolean"},"include":{"type":"array","items":{"type":"string","enum":["dead-code"]}}},"required":[]}),
         },
         ToolSpec {
             name: "pipeline",

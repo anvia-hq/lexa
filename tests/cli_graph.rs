@@ -12,6 +12,32 @@ fn parse_toon_output(output: &[u8]) -> Value {
 }
 
 #[test]
+fn text_search_reports_regex_errors_as_structured_output() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("a.rs"), "fn one() {}\n").unwrap();
+
+    let indexed = lexa()
+        .current_dir(temp.path())
+        .args(["index", "."])
+        .output()
+        .unwrap();
+    assert!(indexed.status.success());
+
+    let output = lexa()
+        .current_dir(temp.path())
+        .args(["text-search", "(", "--regex"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let response = parse_toon_output(&output.stdout);
+    assert_eq!(response["error"], "search_failed");
+    assert!(response["message"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+}
+
+#[test]
 fn index_writes_default_graph_under_indexed_project_root() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");

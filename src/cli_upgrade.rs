@@ -174,12 +174,19 @@ fn unix_secs() -> u64 {
 
 #[cfg(not(windows))]
 fn cmd_upgrade_unix(version: &str, install_dir: &Path, json_output: bool) -> Result<()> {
-    let script = r#"curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh -s -- "$1""#;
+    let tag = release_tag(version);
+    let installer_url = if version == "latest" {
+        format!("https://github.com/{LEXA_REPO}/releases/latest/download/install.sh")
+    } else {
+        format!("https://github.com/{LEXA_REPO}/releases/download/{tag}/install.sh")
+    };
+    let script = r#"curl -fsSL "$1" | sh -s -- "$2""#;
     let mut command = std::process::Command::new("sh");
     command
         .arg("-c")
         .arg(script)
         .arg("lexa-upgrade")
+        .arg(installer_url)
         .arg(version)
         .env("LEXA_INSTALL_DIR", install_dir);
 
@@ -224,8 +231,14 @@ fn cmd_upgrade_windows(version: &str, install_dir: &Path, json_output: bool) -> 
     let pid = std::process::id();
     let escaped_version = version.replace('\'', "''");
     let escaped_install_dir = install_dir.display().to_string().replace('\'', "''");
+    let tag = release_tag(version);
+    let installer_url = if version == "latest" {
+        format!("https://github.com/{LEXA_REPO}/releases/latest/download/install.ps1")
+    } else {
+        format!("https://github.com/{LEXA_REPO}/releases/download/{tag}/install.ps1")
+    };
     let command = format!(
-        "Wait-Process -Id {pid}; $env:LEXA_VERSION = '{escaped_version}'; $env:LEXA_INSTALL_DIR = '{escaped_install_dir}'; irm https://raw.githubusercontent.com/anvia-hq/lexa/main/install.ps1 | iex"
+        "Wait-Process -Id {pid}; $env:LEXA_VERSION = '{escaped_version}'; $env:LEXA_INSTALL_DIR = '{escaped_install_dir}'; irm '{installer_url}' | iex"
     );
 
     std::process::Command::new("powershell")
@@ -277,6 +290,14 @@ fn validate_upgrade_version(version: &str) -> Result<()> {
     bail!("upgrade version must contain only letters, numbers, '.', '_', or '-'")
 }
 
+fn release_tag(version: &str) -> String {
+    if version == "latest" || version.starts_with('v') {
+        version.to_string()
+    } else {
+        format!("v{version}")
+    }
+}
+
 fn print_json(value: serde_json::Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -298,6 +319,13 @@ mod tests {
         assert!(validate_upgrade_version("").is_err());
         assert!(validate_upgrade_version("v0.1.0;rm").is_err());
         assert!(validate_upgrade_version("$(echo bad)").is_err());
+    }
+
+    #[test]
+    fn release_tags_are_normalized_for_versioned_installers() {
+        assert_eq!(release_tag("latest"), "latest");
+        assert_eq!(release_tag("v1.2.3"), "v1.2.3");
+        assert_eq!(release_tag("1.2.3"), "v1.2.3");
     }
 
     #[test]

@@ -20,12 +20,14 @@
     },
     "max": {
       "description": "Alias for max_results.",
+      "maximum": 200,
       "type": "integer"
     },
     "max_lines": {
       "type": "integer"
     },
     "max_results": {
+      "maximum": 200,
       "type": "integer"
     },
     "min_lines": {
@@ -121,9 +123,11 @@
   "properties": {
     "max": {
       "description": "Alias for max_results.",
+      "maximum": 200,
       "type": "integer"
     },
     "max_results": {
+      "maximum": 200,
       "type": "integer"
     },
     "name": {
@@ -230,9 +234,11 @@
   "properties": {
     "max": {
       "description": "Alias for max_results.",
+      "maximum": 200,
       "type": "integer"
     },
     "max_results": {
+      "maximum": 200,
       "type": "integer"
     },
     "name": {
@@ -278,10 +284,12 @@
     },
     "max": {
       "description": "Alias for max_results.",
+      "maximum": 200,
       "minimum": 1,
       "type": "integer"
     },
     "max_results": {
+      "maximum": 200,
       "minimum": 1,
       "type": "integer"
     },
@@ -323,6 +331,7 @@
       "type": "boolean"
     },
     "max_results": {
+      "maximum": 200,
       "type": "integer"
     },
     "path_glob": {
@@ -412,9 +421,11 @@
     },
     "max": {
       "description": "Alias for max_results.",
+      "maximum": 200,
       "type": "integer"
     },
     "max_results": {
+      "maximum": 200,
       "type": "integer"
     },
     "path": {
@@ -638,6 +649,7 @@
 {
   "properties": {
     "limit": {
+      "maximum": 200,
       "type": "integer"
     }
   },
@@ -719,9 +731,11 @@
       "type": "array"
     },
     "max": {
+      "maximum": 1000,
       "type": "integer"
     },
     "max_results": {
+      "maximum": 1000,
       "type": "integer"
     },
     "no_config": {

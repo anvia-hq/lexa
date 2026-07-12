@@ -229,7 +229,7 @@ pub struct SymbolResult {
     pub symbol: Symbol,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolLocation {
     pub path: String,
     pub kind: SymbolKind,
@@ -247,6 +247,41 @@ pub struct FileMeta {
     pub modified_ms: u64,
     #[serde(default = "default_indexed_file")]
     pub indexed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolIndexSnapshot {
+    pub entries: Vec<(String, Vec<SymbolLocation>)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrigramIndexSnapshot {
+    pub postings: Vec<(u32, Vec<u32>)>,
+    pub file_trigrams: Vec<(String, Vec<u32>)>,
+    pub id_to_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WordIndexSnapshot {
+    pub postings: Vec<(String, Vec<(u32, u32)>)>,
+    pub file_words: Vec<(String, Vec<String>)>,
+    pub id_to_path: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineIndexSnapshot {
+    pub symbols: SymbolIndexSnapshot,
+    pub trigrams: TrigramIndexSnapshot,
+    pub words: WordIndexSnapshot,
+}
+
+pub struct EngineSnapshotData {
+    pub outlines: Vec<(String, FileOutline)>,
+    pub file_meta: Vec<(String, FileMeta)>,
+    pub contents: Vec<(String, String)>,
+    pub forward_deps: Vec<(String, Vec<String>)>,
+    pub unresolved_imports: Vec<(String, Vec<UnresolvedImport>)>,
+    pub indexes: Option<EngineIndexSnapshot>,
 }
 
 fn default_indexed_file() -> bool {

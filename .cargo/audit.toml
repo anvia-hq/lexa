@@ -1,0 +1,4 @@
+[advisories]
+# bincode remains read-only for v0.9 graph compatibility. New snapshots use
+# postcard; remove this exception when legacy graph support is dropped.
+ignore = ["RUSTSEC-2025-0141"]

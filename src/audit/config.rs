@@ -6,6 +6,11 @@ use std::path::{Path, PathBuf};
 
 use super::report::AuditSeverity;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AuditIncludes {
+    pub dead_code: bool,
+}
+
 pub(crate) const DEFAULT_MAX_FINDINGS: usize = 100;
 const LARGE_FILE_WARNING_LINES: u32 = 800;
 const LARGE_FILE_HIGH_LINES: u32 = 1500;

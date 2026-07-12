@@ -47,6 +47,18 @@ New-Item -ItemType Directory -Path $tmpDir, $extractDir -Force | Out-Null
 try {
     Write-Host "Downloading $url..."
     Invoke-WebRequest -Uri $url -OutFile $zipPath
+    $checksumsPath = Join-Path $tmpDir "SHA256SUMS"
+    $checksumsUrl = "https://github.com/$Repo/releases/download/$tag/SHA256SUMS"
+    Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsPath
+    $checksumLine = Get-Content $checksumsPath | Where-Object { $_ -match "^[0-9a-fA-F]+\s+$([regex]::Escape($archive))$" } | Select-Object -First 1
+    if (-not $checksumLine) {
+        throw "Checksum file did not contain $archive."
+    }
+    $expectedChecksum = ($checksumLine -split "\s+")[0].ToLowerInvariant()
+    $actualChecksum = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualChecksum -ne $expectedChecksum) {
+        throw "Checksum mismatch for $archive."
+    }
     Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
     $binary = Join-Path $extractDir "lexa-windows-x86_64-$assetVersion\lexa.exe"

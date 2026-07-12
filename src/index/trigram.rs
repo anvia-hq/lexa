@@ -1,3 +1,4 @@
+use crate::types::TrigramIndexSnapshot;
 use hashbrown::{HashMap, HashSet};
 
 pub type Trigram = u32;
@@ -38,13 +39,14 @@ impl TrigramIndex {
     }
 
     pub fn index_file(&mut self, path: &str, content: &str) {
+        self.index_prepared(path, extract_trigrams(content));
+    }
+
+    pub(crate) fn index_prepared(&mut self, path: &str, trigrams: Vec<Trigram>) {
         self.remove_file(path);
 
         let doc_id = self.get_or_create_id(path);
-        let trigrams = extract_trigrams(content);
-        let unique_trigrams: HashSet<Trigram> = trigrams.iter().copied().collect();
-
-        for &tri in &unique_trigrams {
+        for &tri in &trigrams {
             let posting = self.index.entry(tri).or_default();
             match posting.binary_search(&doc_id) {
                 Ok(_) => {}
@@ -58,8 +60,7 @@ impl TrigramIndex {
     pub fn remove_file(&mut self, path: &str) {
         if let Some(trigrams) = self.file_trigrams.remove(path) {
             if let Some(&doc_id) = self.path_to_id.get(path) {
-                let unique: HashSet<Trigram> = trigrams.iter().copied().collect();
-                for tri in unique {
+                for tri in trigrams {
                     if let Some(posting) = self.index.get_mut(&tri) {
                         if let Ok(pos) = posting.binary_search(&doc_id) {
                             posting.remove(pos);
@@ -90,27 +91,30 @@ impl TrigramIndex {
         for window in query_bytes.windows(3) {
             query_trigrams.push(pack_trigram(window));
         }
+        query_trigrams.sort_unstable();
+        query_trigrams.dedup();
 
         if query_trigrams.is_empty() {
             return Vec::new();
         }
 
-        let mut result_ids: Option<HashSet<u32>> = None;
-
-        for tri in &query_trigrams {
-            if let Some(posting) = self.index.get(tri) {
-                let ids: HashSet<u32> = posting.iter().copied().collect();
-                result_ids = Some(match result_ids {
-                    Some(existing) => existing.intersection(&ids).copied().collect(),
-                    None => ids,
-                });
-            } else {
-                return Vec::new();
+        let Some(mut postings) = query_trigrams
+            .iter()
+            .map(|tri| self.index.get(tri))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Vec::new();
+        };
+        postings.sort_by_key(|posting| posting.len());
+        let mut result_ids = postings.first().copied().cloned().unwrap_or_default();
+        for posting in postings.iter().skip(1) {
+            result_ids.retain(|id| posting.binary_search(id).is_ok());
+            if result_ids.is_empty() {
+                break;
             }
         }
 
         result_ids
-            .unwrap_or_default()
             .into_iter()
             .filter_map(|id| {
                 let path = &self.id_to_path[id as usize];
@@ -121,6 +125,83 @@ impl TrigramIndex {
                 }
             })
             .collect()
+    }
+
+    pub(crate) fn snapshot(&self) -> TrigramIndexSnapshot {
+        let mut postings = self
+            .index
+            .iter()
+            .map(|(trigram, doc_ids)| (*trigram, doc_ids.clone()))
+            .collect::<Vec<_>>();
+        postings.sort_by_key(|(trigram, _)| *trigram);
+
+        let mut file_trigrams = self
+            .file_trigrams
+            .iter()
+            .map(|(path, trigrams)| (path.clone(), trigrams.clone()))
+            .collect::<Vec<_>>();
+        file_trigrams.sort_by(|left, right| left.0.cmp(&right.0));
+
+        TrigramIndexSnapshot {
+            postings,
+            file_trigrams,
+            id_to_path: self.id_to_path.clone(),
+        }
+    }
+
+    pub(crate) fn from_snapshot(snapshot: TrigramIndexSnapshot) -> Option<Self> {
+        if snapshot.id_to_path.len() > u32::MAX as usize {
+            return None;
+        }
+
+        let mut path_to_id = HashMap::new();
+        let mut free_ids = Vec::new();
+        for (id, path) in snapshot.id_to_path.iter().enumerate() {
+            if path.is_empty() {
+                free_ids.push(id as u32);
+            } else if path_to_id.insert(path.clone(), id as u32).is_some() {
+                return None;
+            }
+        }
+
+        let valid_ids = snapshot
+            .id_to_path
+            .iter()
+            .enumerate()
+            .filter_map(|(id, path)| (!path.is_empty()).then_some(id as u32))
+            .collect::<HashSet<_>>();
+
+        let mut index = HashMap::new();
+        for (trigram, mut doc_ids) in snapshot.postings {
+            if doc_ids.iter().any(|doc_id| !valid_ids.contains(doc_id)) {
+                return None;
+            }
+            doc_ids.sort_unstable();
+            doc_ids.dedup();
+            if index.insert(trigram, doc_ids).is_some() {
+                return None;
+            }
+        }
+
+        let mut file_trigrams = HashMap::new();
+        for (path, mut trigrams) in snapshot.file_trigrams {
+            if !path_to_id.contains_key(&path) {
+                return None;
+            }
+            trigrams.sort_unstable();
+            trigrams.dedup();
+            if file_trigrams.insert(path, trigrams).is_some() {
+                return None;
+            }
+        }
+
+        Some(Self {
+            index,
+            file_trigrams,
+            path_to_id,
+            id_to_path: snapshot.id_to_path,
+            free_ids,
+        })
     }
 }
 
@@ -144,7 +225,8 @@ pub fn extract_trigrams(content: &str) -> Vec<Trigram> {
             trigrams.push(pack_trigram(window));
         }
     }
-
+    trigrams.sort_unstable();
+    trigrams.dedup();
     trigrams
 }
 
