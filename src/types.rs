@@ -249,6 +249,13 @@ pub struct FileMeta {
     pub indexed: bool,
 }
 
+pub struct EngineSnapshotData {
+    pub outlines: Vec<(String, FileOutline)>,
+    pub file_meta: Vec<(String, FileMeta)>,
+    pub contents: Vec<(String, String)>,
+    pub forward_deps: Vec<(String, Vec<String>)>,
+}
+
 fn default_indexed_file() -> bool {
     true
 }

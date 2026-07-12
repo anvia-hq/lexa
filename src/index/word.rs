@@ -1,4 +1,4 @@
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +46,7 @@ impl WordIndex {
         self.remove_file(path);
 
         let doc_id = self.get_or_create_id(path);
-        let mut words_set: Vec<String> = Vec::new();
+        let mut words_set = HashSet::new();
 
         for (line_idx, line) in content.lines().enumerate() {
             let line_num = (line_idx + 1) as u32;
@@ -61,13 +61,13 @@ impl WordIndex {
                     entry.push(hit);
                 }
 
-                if !words_set.contains(&token) {
-                    words_set.push(token);
-                }
+                words_set.insert(token);
             }
         }
 
-        self.file_words.insert(path.to_string(), words_set);
+        let mut words = words_set.into_iter().collect::<Vec<_>>();
+        words.sort();
+        self.file_words.insert(path.to_string(), words);
     }
 
     pub fn remove_file(&mut self, path: &str) {

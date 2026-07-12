@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added checksummed v2 graph snapshots with transparent v1 snapshot loading.
+- Added release-asset checksum verification to the Unix and Windows installers.
+- Added cross-platform, website, dependency-audit, and installer checks to CI.
+
+### Fixed
+
+- Detect same-size source changes even when file modification times are preserved.
+- Preserve line endings and executable permissions during atomic line edits.
+- Bound newline-delimited MCP messages, headers, and agent-facing result counts.
+- Report one deterministic finding per dependency cycle and downgrade cycles contained within one Rust module family.
+
+### Changed
+
+- Centralized shared CLI/MCP read, patch, create, and audit workflows plus MCP graph lifecycle persistence.
+- Reduced index memory and CPU overhead by removing duplicate content caching and deduplicating word and trigram data.
+
 ## v0.9.0 - 2026-06-30
 
 ### Added

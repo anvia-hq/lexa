@@ -1,12 +1,10 @@
 use crate::engine::Engine;
-use hashbrown::HashSet;
-use std::collections::HashMap;
+use hashbrown::{HashMap, HashSet};
 
 use crate::audit::config::AuditConfig;
 use crate::audit::report::{AuditActionability, AuditFinding, AuditNextStep, AuditSeverity};
 use serde_json::json;
 
-const MAX_CYCLE_DEPTH: usize = 32;
 const MAX_INTERNAL_CYCLES: usize = 1000;
 
 pub(crate) fn audit_cycles(
@@ -27,20 +25,35 @@ pub(crate) fn audit_cycles(
         let Some(path) = cycle.first().cloned() else {
             continue;
         };
+        let module_internal = is_internal_rust_module_cycle(&cycle);
+        let finding_severity = if module_internal && severity == AuditSeverity::High {
+            AuditSeverity::Warning
+        } else {
+            severity
+        };
         let next_path = path.clone();
         let trace_path = path.clone();
+        let evidence_cycle = ordered_cycle(engine, &cycle).unwrap_or_else(|| {
+            let mut fallback = cycle.clone();
+            fallback.push(path.clone());
+            fallback
+        });
         findings.push(AuditFinding {
             id: format!("architecture.cycle:{path}"),
             rule: "architecture.cycle".to_string(),
-            severity,
+            severity: finding_severity,
             actionability: AuditActionability::Actionable,
             secondary: false,
-            title: "Import cycle detected".to_string(),
+            title: if module_internal {
+                "Rust module dependency cycle detected".to_string()
+            } else {
+                "Import cycle detected".to_string()
+            },
             path,
             line_start: None,
             line_end: None,
             message: "Files in this cycle depend on each other through parsed imports.".to_string(),
-            evidence: vec![cycle.join(" -> ")],
+            evidence: vec![evidence_cycle.join(" -> ")],
             related_paths: cycle,
             suggestion:
                 "Break the cycle by moving shared types or behavior into a lower-level module."
@@ -56,12 +69,51 @@ pub(crate) fn audit_cycles(
     }
 }
 
+fn ordered_cycle(engine: &Engine, component: &[String]) -> Option<Vec<String>> {
+    let start = component.first()?;
+    let members = component.iter().cloned().collect::<HashSet<_>>();
+    let mut path = vec![start.clone()];
+    if find_cycle_path(engine, start, start, &members, &mut path) {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn find_cycle_path(
+    engine: &Engine,
+    start: &str,
+    current: &str,
+    members: &HashSet<String>,
+    path: &mut Vec<String>,
+) -> bool {
+    for neighbor in engine.get_depends_on(current) {
+        if !members.contains(&neighbor) {
+            continue;
+        }
+        if neighbor == start && path.len() > 1 {
+            path.push(neighbor);
+            return true;
+        }
+        if path.contains(&neighbor) {
+            continue;
+        }
+        path.push(neighbor.clone());
+        if find_cycle_path(engine, start, &neighbor, members, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
+}
+
 fn find_cycles(engine: &Engine) -> Vec<Vec<String>> {
-    let paths = engine
+    let mut paths = engine
         .file_map()
         .into_iter()
         .map(|(path, _)| path)
         .collect::<Vec<_>>();
+    paths.sort();
     let indexed = paths.iter().cloned().collect::<HashSet<_>>();
     let mut adjacency = HashMap::new();
 
@@ -75,65 +127,140 @@ fn find_cycles(engine: &Engine) -> Vec<Vec<String>> {
         adjacency.insert(path.clone(), deps);
     }
 
-    let mut cycles = Vec::new();
-    let mut seen = HashSet::new();
+    StronglyConnectedComponents::new(&adjacency)
+        .run(&paths)
+        .into_iter()
+        .filter(|component| component.len() > 1)
+        .take(MAX_INTERNAL_CYCLES)
+        .collect()
+}
 
-    for start in &paths {
-        let mut stack = vec![start.clone()];
-        dfs_cycles(start, start, &adjacency, &mut stack, &mut seen, &mut cycles);
-        if cycles.len() >= MAX_INTERNAL_CYCLES {
-            break;
+struct StronglyConnectedComponents<'a> {
+    adjacency: &'a HashMap<String, Vec<String>>,
+    next_index: usize,
+    indices: HashMap<String, usize>,
+    lowlinks: HashMap<String, usize>,
+    stack: Vec<String>,
+    on_stack: HashSet<String>,
+    components: Vec<Vec<String>>,
+}
+
+impl<'a> StronglyConnectedComponents<'a> {
+    fn new(adjacency: &'a HashMap<String, Vec<String>>) -> Self {
+        Self {
+            adjacency,
+            next_index: 0,
+            indices: HashMap::new(),
+            lowlinks: HashMap::new(),
+            stack: Vec::new(),
+            on_stack: HashSet::new(),
+            components: Vec::new(),
         }
     }
 
-    cycles
-}
-
-fn dfs_cycles(
-    start: &str,
-    current: &str,
-    adjacency: &HashMap<String, Vec<String>>,
-    stack: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-    cycles: &mut Vec<Vec<String>>,
-) {
-    if stack.len() > MAX_CYCLE_DEPTH || cycles.len() >= MAX_INTERNAL_CYCLES {
-        return;
-    }
-
-    let Some(neighbors) = adjacency.get(current) else {
-        return;
-    };
-
-    for neighbor in neighbors {
-        if neighbor == start && stack.len() > 1 {
-            let key = canonical_cycle_key(stack);
-            if seen.insert(key) {
-                let mut cycle = stack.clone();
-                cycle.push(start.to_string());
-                cycles.push(cycle);
+    fn run(mut self, paths: &[String]) -> Vec<Vec<String>> {
+        for path in paths {
+            if !self.indices.contains_key(path) {
+                self.visit(path);
             }
-            continue;
+        }
+        self.components.sort();
+        self.components
+    }
+
+    fn visit(&mut self, path: &str) {
+        let index = self.next_index;
+        self.next_index += 1;
+        self.indices.insert(path.to_string(), index);
+        self.lowlinks.insert(path.to_string(), index);
+        self.stack.push(path.to_string());
+        self.on_stack.insert(path.to_string());
+
+        for neighbor in self.adjacency.get(path).cloned().unwrap_or_default() {
+            if !self.indices.contains_key(&neighbor) {
+                self.visit(&neighbor);
+                let neighbor_lowlink = self.lowlinks[&neighbor];
+                let path_lowlink = self.lowlinks[path];
+                self.lowlinks
+                    .insert(path.to_string(), path_lowlink.min(neighbor_lowlink));
+            } else if self.on_stack.contains(&neighbor) {
+                let neighbor_index = self.indices[&neighbor];
+                let path_lowlink = self.lowlinks[path];
+                self.lowlinks
+                    .insert(path.to_string(), path_lowlink.min(neighbor_index));
+            }
         }
 
-        if stack.iter().any(|path| path == neighbor) {
-            continue;
+        if self.lowlinks[path] != self.indices[path] {
+            return;
         }
 
-        stack.push(neighbor.clone());
-        dfs_cycles(start, neighbor, adjacency, stack, seen, cycles);
-        stack.pop();
+        let mut component = Vec::new();
+        while let Some(member) = self.stack.pop() {
+            self.on_stack.remove(&member);
+            let finished = member == path;
+            component.push(member);
+            if finished {
+                break;
+            }
+        }
+        component.sort();
+        self.components.push(component);
     }
 }
 
-fn canonical_cycle_key(cycle: &[String]) -> String {
-    let mut rotations = Vec::new();
-    for index in 0..cycle.len() {
-        let mut rotated = Vec::with_capacity(cycle.len());
-        rotated.extend_from_slice(&cycle[index..]);
-        rotated.extend_from_slice(&cycle[..index]);
-        rotations.push(rotated.join("\u{1f}"));
+fn is_internal_rust_module_cycle(cycle: &[String]) -> bool {
+    if cycle.iter().any(|path| !path.ends_with(".rs")) {
+        return false;
     }
-    rotations.sort();
-    rotations.remove(0)
+
+    cycle.iter().any(|candidate| {
+        let family = candidate
+            .strip_suffix("/mod.rs")
+            .or_else(|| candidate.strip_suffix(".rs"))
+            .unwrap_or(candidate);
+        cycle.iter().all(|path| {
+            path == &format!("{family}.rs")
+                || path == &format!("{family}/mod.rs")
+                || path.starts_with(&format!("{family}/"))
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rust_parent_and_child_files_are_one_module_family() {
+        assert!(is_internal_rust_module_cycle(&[
+            "src/audit.rs".to_string(),
+            "src/audit/rules.rs".to_string(),
+            "src/audit/rules/size.rs".to_string(),
+        ]));
+        assert!(!is_internal_rust_module_cycle(&[
+            "src/engine/mod.rs".to_string(),
+            "src/snapshot.rs".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn cycle_search_returns_one_component_for_overlapping_cycles() {
+        let mut engine = Engine::new(4);
+        engine.index_file("src/a.rs", "use crate::b;\nuse crate::c;\n");
+        engine.index_file("src/b.rs", "use crate::a;\nuse crate::c;\n");
+        engine.index_file("src/c.rs", "use crate::a;\n");
+
+        let cycles = find_cycles(&engine);
+
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(
+            cycles[0],
+            vec![
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/c.rs".to_string()
+            ]
+        );
+    }
 }

@@ -64,6 +64,7 @@ pub struct WalkedFileMeta {
     pub modified_ms: u64,
     pub byte_size: u64,
     pub indexable: bool,
+    pub change_ns: Option<u128>,
 }
 
 pub fn walk_project_meta(root: impl AsRef<Path>) -> Vec<WalkedFileMeta> {
@@ -172,7 +173,22 @@ fn walked_file_meta(root: &Path, path: &Path) -> Option<WalkedFileMeta> {
         modified_ms,
         byte_size: metadata.len(),
         indexable,
+        change_ns: metadata_change_ns(&metadata),
     })
+}
+
+#[cfg(unix)]
+fn metadata_change_ns(metadata: &std::fs::Metadata) -> Option<u128> {
+    use std::os::unix::fs::MetadataExt;
+
+    let seconds = u128::try_from(metadata.ctime()).ok()?;
+    let nanos = u128::try_from(metadata.ctime_nsec()).ok()?;
+    Some(seconds.saturating_mul(1_000_000_000).saturating_add(nanos))
+}
+
+#[cfg(not(unix))]
+fn metadata_change_ns(_metadata: &std::fs::Metadata) -> Option<u128> {
+    None
 }
 
 fn should_skip_path(path: &Path) -> bool {

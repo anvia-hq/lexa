@@ -4,8 +4,8 @@ mod rules;
 mod scope;
 
 pub use config::{
-    load_audit_config, AuditConfig, AuditIgnore, AuditRules, AuditThresholds, DeadCodeConfig,
-    RuleSetting,
+    load_audit_config, AuditConfig, AuditIgnore, AuditIncludes, AuditRules, AuditThresholds,
+    DeadCodeConfig, RuleSetting,
 };
 pub use report::{
     render_audit_report, AuditActionability, AuditFinding, AuditGroups, AuditNextStep, AuditReport,
@@ -38,11 +38,6 @@ impl Default for AuditOptions {
             includes: AuditIncludes::default(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AuditIncludes {
-    pub dead_code: bool,
 }
 
 pub fn run_audit(engine: &Engine, options: AuditOptions) -> AuditReport {

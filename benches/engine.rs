@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use lexa::engine::{Engine, SearchOptions};
+use lexa::freshness;
 use lexa::snapshot;
 use lexa::store::Op;
 use std::fs;
@@ -217,6 +218,19 @@ fn bench_snapshot(c: &mut Criterion) {
             .expect("load snapshot");
             black_box((count, loaded.file_count(), loaded.symbol_index_count()));
         });
+    });
+
+    group.bench_function("strict_refresh_unchanged", |b| {
+        b.iter_batched(
+            || build_engine_from_project(project.path()),
+            |mut engine| {
+                black_box(
+                    freshness::refresh_project(&mut engine, project.path())
+                        .expect("refresh project"),
+                );
+            },
+            BatchSize::LargeInput,
+        );
     });
 
     group.finish();

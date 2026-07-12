@@ -2,13 +2,14 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
+use lexa::application::{self, ProjectSession};
 use lexa::engine::{self, ContextOptions, FileFilterOptions, SearchOptions, WordSearchOptions};
 use lexa::output::{
     agent_toon, format_unix_ms_utc, rich_results_json, word_result_kind_facets,
     word_result_path_facets,
 };
 use lexa::project_path::{normalize_project_path, project_target_path, PathMode};
-use lexa::{audit, edit, freshness, mcp, pipeline, snapshot, store};
+use lexa::{audit, edit, freshness, mcp, pipeline, snapshot};
 use serde_json::json;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -694,7 +695,6 @@ fn graph_path(cli: &Cli) -> Result<PathBuf> {
 
 struct LoadedEngine {
     engine: engine::Engine,
-    graph_path: PathBuf,
     refresh: freshness::RefreshSummary,
 }
 
@@ -735,11 +735,7 @@ fn load_engine_for_root(root: &Path, cli: &Cli) -> Result<LoadedEngine> {
         refresh = refresh_loaded_graph(&mut engine, root, &path, !cli.no_graph)?;
     }
 
-    Ok(LoadedEngine {
-        engine,
-        graph_path: path,
-        refresh,
-    })
+    Ok(LoadedEngine { engine, refresh })
 }
 
 fn load_existing_engine_for_root(root: &Path, cli: &Cli) -> Result<(engine::Engine, PathBuf)> {
@@ -1591,14 +1587,24 @@ fn cmd_read(
     show_hash: bool,
     cli: &Cli,
 ) -> Result<()> {
-    let engine = load_engine(cli)?;
+    let mut engine = load_engine(cli)?;
     let root = std::env::current_dir()?;
-    let path = normalize_project_path(&root, path, PathMode::Create)?;
+    let operation = ProjectSession::new(&mut engine, &root, Path::new(""), false).read(
+        application::ReadRequest {
+            path,
+            existing_only: false,
+            line_start,
+            line_end,
+            compact,
+            if_hash,
+        },
+    )?;
+    let path = operation.path;
     if engine.file_count() == 0 && project_target_path(&root, &path).exists() {
         bail!("no files indexed; run 'lexa index .' before reading files");
     }
 
-    match engine.read_file_rich(&path, line_start, line_end, compact, if_hash) {
+    match operation.file {
         Some(result) => {
             if cli.json {
                 return print_agent_result(json!({
@@ -1648,8 +1654,6 @@ fn cmd_edit(
     cli: &Cli,
 ) -> Result<()> {
     let root = current_root()?;
-    let rel_path = normalize_project_path(&root, path, PathMode::Existing)?;
-    let abs_path = project_target_path(&root, &rel_path);
     let (range_start, range_end) = if let Some(range) = line_range {
         parse_line_range(range)?
     } else {
@@ -1662,29 +1666,29 @@ fn cmd_edit(
         content.map(ToString::to_string)
     };
 
-    let mut loaded_engine = if !dry_run && !cli.no_graph {
-        Some(load_existing_engine_for_root(&root, cli)?)
+    let (mut engine, snap_path) = if !dry_run && !cli.no_graph {
+        load_existing_engine_for_root(&root, cli)?
     } else {
-        None
+        (engine::Engine::new(16), graph_path_for_root(&root, cli))
     };
-
-    let request = edit::EditRequest {
-        path: abs_path,
-        op,
-        range_start,
-        range_end,
-        after,
-        content: edit_content,
-        replace_text: replace_text.map(ToString::to_string),
-        anchor: anchor.map(ToString::to_string),
-        placement,
-        preview_mode,
-        if_hash: if_hash.map(ToString::to_string),
-        dry_run,
-    };
-
-    let result = edit::apply_edit(&request)?;
-    let effective_op = effective_edit_op(op, replace_text, anchor)?;
+    let operation = ProjectSession::new(&mut engine, &root, &snap_path, !cli.no_graph).patch(
+        application::PatchRequest {
+            path,
+            op,
+            range_start,
+            range_end,
+            after,
+            content: edit_content,
+            replace_text: replace_text.map(ToString::to_string),
+            anchor: anchor.map(ToString::to_string),
+            placement,
+            preview_mode,
+            if_hash: if_hash.map(ToString::to_string),
+            dry_run,
+        },
+    )?;
+    let rel_path = operation.path;
+    let result = operation.edit;
     let op_label = edit_op_label(op, replace_text, anchor);
 
     if dry_run {
@@ -1710,16 +1714,6 @@ fn cmd_edit(
     }
 
     if result.changed {
-        let (mut engine, snap_path) = if let Some((engine, snap_path)) = loaded_engine.take() {
-            (engine, snap_path)
-        } else {
-            let loaded = load_engine_for_root(&root, cli)?;
-            (loaded.engine, loaded.graph_path)
-        };
-        engine.index_edited_file(&rel_path, &result.new_content, store_op(effective_op));
-        if !cli.no_graph {
-            snapshot::write_snapshot(&engine, &snap_path)?;
-        }
         if cli.json {
             return print_agent_result(json!({
                 "path": rel_path,
@@ -1770,41 +1764,28 @@ fn cmd_create(
     cli: &Cli,
 ) -> Result<()> {
     let root = current_root()?;
-    let rel_path = normalize_project_path(&root, path, PathMode::Create)?;
-    let abs_path = project_target_path(&root, &rel_path);
     let content = if let Some(path) = content_file {
         std::fs::read_to_string(path)?
     } else {
         content.unwrap_or("").to_string()
     };
 
-    let mut loaded_engine = if !dry_run && !cli.no_graph {
-        Some(load_existing_engine_for_root(&root, cli)?)
+    let (mut engine, snap_path) = if !dry_run && !cli.no_graph {
+        load_existing_engine_for_root(&root, cli)?
     } else {
-        None
+        (engine::Engine::new(16), graph_path_for_root(&root, cli))
     };
-
-    let request = edit::CreateRequest {
-        path: abs_path,
-        content: content.clone(),
-        overwrite,
-        dry_run,
-    };
-    let would_create = dry_run && !request.path.exists();
-    let result = edit::create_file(&request)?;
-
-    if !dry_run {
-        let (mut engine, snap_path) = if let Some((engine, snap_path)) = loaded_engine.take() {
-            (engine, snap_path)
-        } else {
-            let loaded = load_engine_for_root(&root, cli)?;
-            (loaded.engine, loaded.graph_path)
-        };
-        engine.index_edited_file(&rel_path, &content, store::Op::Create);
-        if !cli.no_graph {
-            snapshot::write_snapshot(&engine, &snap_path)?;
-        }
-    }
+    let operation = ProjectSession::new(&mut engine, &root, &snap_path, !cli.no_graph).create(
+        application::CreateRequest {
+            path,
+            content,
+            overwrite,
+            dry_run,
+        },
+    )?;
+    let rel_path = operation.path;
+    let result = operation.create;
+    let would_create = operation.would_create;
 
     if cli.json {
         let mut payload = json!({
@@ -1837,14 +1818,6 @@ fn cmd_create(
     Ok(())
 }
 
-fn store_op(op: edit::EditOp) -> store::Op {
-    match op {
-        edit::EditOp::Replace => store::Op::Replace,
-        edit::EditOp::Insert => store::Op::Insert,
-        edit::EditOp::Delete => store::Op::Delete,
-    }
-}
-
 fn format_edit_applied(path: &str, result: &edit::EditResult, hash: u64) -> String {
     if result.lines_added == 0 && result.lines_removed == 0 {
         return format!(
@@ -1857,19 +1830,6 @@ fn format_edit_applied(path: &str, result: &edit::EditResult, hash: u64) -> Stri
         "edit applied to {path}: +{} -{} lines ({} total), hash:{hash:x}",
         result.lines_added, result.lines_removed, result.line_count
     )
-}
-
-fn effective_edit_op(
-    op: Option<edit::EditOp>,
-    replace_text: Option<&str>,
-    anchor: Option<&str>,
-) -> Result<edit::EditOp> {
-    match (op, replace_text.is_some(), anchor.is_some()) {
-        (Some(op), false, false) => Ok(op),
-        (None, true, false) => Ok(edit::EditOp::Replace),
-        (None, false, true) => Ok(edit::EditOp::Insert),
-        _ => bail!("patch requires exactly one target: operation, --replace-text, or --anchor"),
-    }
 }
 
 fn edit_op_label(
@@ -2027,7 +1987,7 @@ fn cmd_audit(
     include: &[AuditInclude],
     cli: &Cli,
 ) -> Result<()> {
-    let engine = load_engine(cli)?;
+    let mut engine = load_engine(cli)?;
     if engine.file_count() == 0 {
         bail!("no files indexed; run 'lexa index .' before running audit");
     }
@@ -2041,15 +2001,13 @@ fn cmd_audit(
     } else {
         audit::AuditScope::Project
     };
-    let report = audit::run_audit(
-        &engine,
-        audit::AuditOptions {
+    let report =
+        ProjectSession::new(&mut engine, &root, Path::new(""), false).audit(audit::AuditOptions {
             max_results: max,
             scope,
             config,
             includes: audit_includes(include),
-        },
-    );
+        });
 
     if cli.json {
         print_agent_result(json!(report))?;

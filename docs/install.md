@@ -32,6 +32,8 @@ By default, `upgrade` installs into the directory containing the running `lexa` 
 
 `lexa upgrade` updates the binary, not a project index. Use `lexa index .` to refresh a project's graph.
 
+Release installers verify the selected archive against the release's `SHA256SUMS` file before extraction. If checksum verification fails, installation stops without replacing the existing binary.
+
 ## Troubleshooting
 
 If `lexa --version` is unavailable after install, verify that the install directory is on `PATH`.

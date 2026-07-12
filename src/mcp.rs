@@ -2,11 +2,12 @@ use anyhow::{bail, Context, Result};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::application::{self, ProjectSession};
 use crate::audit::{self, AuditOptions};
 use crate::edit::{self, EditOp};
 use crate::engine::{Engine, FileFilterOptions, SearchOptions, WordSearchOptions};
@@ -17,12 +18,14 @@ use crate::output::{
 };
 use crate::project_path::{normalize_project_path, project_target_path, PathMode};
 use crate::snapshot;
-use crate::store;
 
 pub mod tool_spec;
 
 const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_MCP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MCP_HEADER_BYTES: usize = 8 * 1024;
+const MAX_RETRIEVAL_RESULTS: usize = 200;
+const MAX_AUDIT_RESULTS: usize = 1000;
 
 pub struct McpServer {
     engine: Engine,
@@ -333,7 +336,8 @@ impl McpServer {
                 req_any_str(args, &["query", "path", "pattern", "name"])?,
                 opt_usize(args, "max_results")
                     .or_else(|| opt_usize(args, "max"))
-                    .unwrap_or(20),
+                    .unwrap_or(20)
+                    .min(MAX_RETRIEVAL_RESULTS),
             ),
             "outline" => self.tool_outline(req_str(args, "path")?),
             "symbol_defs" => self.tool_find_symbol(req_any_str(args, &["name", "query"])?),
@@ -347,7 +351,11 @@ impl McpServer {
             "patch" => self.tool_patch(args),
             "create" => self.tool_create(args),
             "changes" => Ok(self.tool_changes(opt_u64(args, "since").unwrap_or(0))),
-            "recent" => Ok(self.tool_recent(opt_usize(args, "limit").unwrap_or(10))),
+            "recent" => Ok(self.tool_recent(
+                opt_usize(args, "limit")
+                    .unwrap_or(10)
+                    .min(MAX_RETRIEVAL_RESULTS),
+            )),
             "status" => Ok(self.tool_status()),
             "reindex" => self.tool_reindex(),
             "clear_index" => self.tool_clear_index(),
@@ -360,7 +368,8 @@ impl McpServer {
     fn tool_map(&self, args: &Value) -> ToolOutput {
         let limit = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
-            .unwrap_or(200);
+            .unwrap_or(MAX_RETRIEVAL_RESULTS)
+            .min(MAX_RETRIEVAL_RESULTS);
         let filters = FileFilterOptions {
             path_prefix: opt_str(args, "path")
                 .filter(|path| !path.is_empty())
@@ -609,7 +618,8 @@ impl McpServer {
         let query = req_any_str(args, &["query", "name"])?;
         let limit = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
-            .unwrap_or(20);
+            .unwrap_or(20)
+            .min(MAX_RETRIEVAL_RESULTS);
         let results = self.engine.fuzzy_symbols(query, limit);
         let text = if results.is_empty() {
             format!("No symbols found matching '{query}'")
@@ -653,7 +663,7 @@ impl McpServer {
         let limit = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
             .unwrap_or(50)
-            .max(1);
+            .clamp(1, MAX_RETRIEVAL_RESULTS);
         let options = WordSearchOptions {
             path_prefix: opt_str(args, "path_prefix")
                 .or_else(|| opt_str(args, "path"))
@@ -691,7 +701,8 @@ impl McpServer {
         let query = req_str(args, "query")?;
         let limit = opt_usize(args, "max_results")
             .or_else(|| opt_usize(args, "max"))
-            .unwrap_or(20);
+            .unwrap_or(20)
+            .min(MAX_RETRIEVAL_RESULTS);
         let options = SearchOptions {
             max_results: limit.saturating_add(1),
             regex: opt_bool(args, "regex").unwrap_or(false),
@@ -772,7 +783,8 @@ impl McpServer {
         let options = crate::engine::ContextOptions {
             max_results: opt_usize(args, "max_results")
                 .or_else(|| opt_usize(args, "max"))
-                .unwrap_or(10),
+                .unwrap_or(10)
+                .min(MAX_RETRIEVAL_RESULTS),
             path_prefix: opt_str(args, "path_prefix")
                 .or_else(|| opt_str(args, "path"))
                 .map(ToString::to_string),
@@ -821,19 +833,27 @@ impl McpServer {
         ))
     }
 
-    fn tool_read(&self, args: &Value) -> Result<ToolOutput> {
-        let path = normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Existing)?;
+    fn tool_read(&mut self, args: &Value) -> Result<ToolOutput> {
         let line_start = opt_u32(args, "line_start");
         let line_end = opt_u32(args, "line_end");
-        let result = self
-            .engine
-            .read_file_rich(
-                &path,
-                line_start,
-                line_end,
-                opt_bool(args, "compact").unwrap_or(false),
-                opt_str(args, "if_hash"),
-            )
+        let compact = opt_bool(args, "compact").unwrap_or(false);
+        let operation = ProjectSession::new(
+            &mut self.engine,
+            &self.root,
+            &self.graph_path,
+            self.persist_graph,
+        )
+        .read(application::ReadRequest {
+            path: req_str(args, "path")?,
+            existing_only: true,
+            line_start,
+            line_end,
+            compact,
+            if_hash: opt_str(args, "if_hash"),
+        })?;
+        let path = operation.path;
+        let result = operation
+            .file
             .with_context(|| format!("file not found: {path}"))?;
 
         if result.unchanged {
@@ -862,16 +882,13 @@ impl McpServer {
                 "unchanged": false,
                 "line_start": line_start,
                 "line_end": line_end,
-                "compact": opt_bool(args, "compact").unwrap_or(false),
+                "compact": compact,
                 "content": result.content,
             }),
         ))
     }
 
     fn tool_patch(&mut self, args: &Value) -> Result<ToolOutput> {
-        let rel_path =
-            normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Existing)?;
-        let abs_path = project_target_path(&self.root, &rel_path);
         let op = opt_str(args, "op").map(parse_edit_op).transpose()?;
         let replace_text = opt_str(args, "replace_text").map(ToString::to_string);
         let anchor = opt_str(args, "anchor").map(ToString::to_string);
@@ -883,8 +900,15 @@ impl McpServer {
             .transpose()?
             .unwrap_or(edit::PreviewMode::Compact);
 
-        let request = edit::EditRequest {
-            path: abs_path,
+        let dry_run = opt_bool(args, "dry_run").unwrap_or(false);
+        let operation = ProjectSession::new(
+            &mut self.engine,
+            &self.root,
+            &self.graph_path,
+            self.persist_graph,
+        )
+        .patch(application::PatchRequest {
+            path: req_str(args, "path")?,
             op,
             range_start: opt_u32(args, "range_start"),
             range_end: opt_u32(args, "range_end"),
@@ -895,21 +919,12 @@ impl McpServer {
             placement,
             preview_mode,
             if_hash: opt_str(args, "if_hash").map(ToString::to_string),
-            dry_run: opt_bool(args, "dry_run").unwrap_or(false),
-        };
-
-        let result = edit::apply_edit(&request)?;
-        let effective_op = effective_edit_op(
-            request.op,
-            request.replace_text.as_deref(),
-            request.anchor.as_deref(),
-        )?;
-        let op_label = edit_op_label(
-            request.op,
-            request.replace_text.as_deref(),
-            request.anchor.as_deref(),
-        );
-        if request.dry_run {
+            dry_run,
+        })?;
+        let rel_path = operation.path;
+        let result = operation.edit;
+        let op_label = edit_op_label(op, opt_str(args, "replace_text"), opt_str(args, "anchor"));
+        if dry_run {
             let text = format!(
                 "{}\nold_hash:{:x}\nnew_hash:{:x}",
                 result.preview, result.old_hash, result.new_hash
@@ -933,11 +948,6 @@ impl McpServer {
         }
 
         if result.changed {
-            self.engine
-                .index_edited_file(&rel_path, &result.new_content, store_op(effective_op));
-            if self.persist_graph {
-                snapshot::write_snapshot(&self.engine, &self.graph_path)?;
-            }
             let hash = format!("{:x}", result.new_hash);
             Ok(ToolOutput::new(
                 format_patch_applied(&rel_path, &result, &hash),
@@ -973,28 +983,25 @@ impl McpServer {
     }
 
     fn tool_create(&mut self, args: &Value) -> Result<ToolOutput> {
-        let rel_path =
-            normalize_project_path(&self.root, req_str(args, "path")?, PathMode::Create)?;
-        let abs_path = project_target_path(&self.root, &rel_path);
         let content = opt_str(args, "content").unwrap_or("").to_string();
         let overwrite = opt_bool(args, "overwrite").unwrap_or(false);
         let dry_run = opt_bool(args, "dry_run").unwrap_or(false);
 
-        let request = edit::CreateRequest {
-            path: abs_path,
-            content: content.clone(),
+        let operation = ProjectSession::new(
+            &mut self.engine,
+            &self.root,
+            &self.graph_path,
+            self.persist_graph,
+        )
+        .create(application::CreateRequest {
+            path: req_str(args, "path")?,
+            content,
             overwrite,
             dry_run,
-        };
-        let would_create = dry_run && !request.path.exists();
-        let result = edit::create_file(&request)?;
-        if !dry_run {
-            self.engine
-                .index_edited_file(&rel_path, &content, store::Op::Create);
-            if self.persist_graph {
-                snapshot::write_snapshot(&self.engine, &self.graph_path)?;
-            }
-        }
+        })?;
+        let rel_path = operation.path;
+        let result = operation.create;
+        let would_create = operation.would_create;
 
         let hash = format!("{:x}", result.hash);
         let text = if dry_run {
@@ -1118,12 +1125,13 @@ impl McpServer {
     }
 
     fn tool_reindex(&mut self) -> Result<ToolOutput> {
-        let mut engine = Engine::new(16384);
-        let count = engine.index_project(&self.root);
-        if self.persist_graph {
-            snapshot::write_snapshot(&engine, &self.graph_path)?;
-        }
-        self.engine = engine;
+        let count = ProjectSession::new(
+            &mut self.engine,
+            &self.root,
+            &self.graph_path,
+            self.persist_graph,
+        )
+        .reindex()?;
         Ok(ToolOutput::new(
             format!("reindexed {count} files"),
             json!({
@@ -1138,12 +1146,14 @@ impl McpServer {
     }
 
     fn tool_clear_index(&mut self) -> Result<ToolOutput> {
-        let existed = self.graph_path.exists();
-        if existed {
-            std::fs::remove_file(&self.graph_path)
-                .with_context(|| format!("failed to remove graph {}", self.graph_path.display()))?;
-        }
-        self.engine = Engine::new(16384);
+        let existed = ProjectSession::new(
+            &mut self.engine,
+            &self.root,
+            &self.graph_path,
+            self.persist_graph,
+        )
+        .clear_index()
+        .with_context(|| format!("failed to remove graph {}", self.graph_path.display()))?;
         Ok(ToolOutput::new(
             if existed {
                 format!(
@@ -1161,8 +1171,10 @@ impl McpServer {
         ))
     }
 
-    fn tool_audit(&self, args: &Value) -> Result<ToolOutput> {
-        let max_results = opt_usize(args, "max_results").or_else(|| opt_usize(args, "max"));
+    fn tool_audit(&mut self, args: &Value) -> Result<ToolOutput> {
+        let max_results = opt_usize(args, "max_results")
+            .or_else(|| opt_usize(args, "max"))
+            .map(|value| value.min(MAX_AUDIT_RESULTS));
         let config_path = opt_str(args, "config").map(PathBuf::from);
         let config = audit::load_audit_config(
             &self.root,
@@ -1178,15 +1190,18 @@ impl McpServer {
         } else {
             audit::AuditScope::Project
         };
-        let report = audit::run_audit(
-            &self.engine,
-            AuditOptions {
-                max_results,
-                scope,
-                config,
-                includes,
-            },
-        );
+        let report = ProjectSession::new(
+            &mut self.engine,
+            &self.root,
+            &self.graph_path,
+            self.persist_graph,
+        )
+        .audit(AuditOptions {
+            max_results,
+            scope,
+            config,
+            includes,
+        });
         let text = audit::render_audit_report(&report);
         Ok(ToolOutput::new(text, json!(report)))
     }
@@ -1214,7 +1229,7 @@ impl McpServer {
 }
 
 fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
-    let Some(first_line) = read_non_empty_line(reader)? else {
+    let Some(first_line) = read_non_empty_line(reader, MAX_MCP_MESSAGE_BYTES)? else {
         return Ok(None);
     };
 
@@ -1228,13 +1243,17 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
         }));
     }
 
+    if first_line.len() > MAX_MCP_HEADER_BYTES {
+        bail!("MCP headers exceed maximum size of {MAX_MCP_HEADER_BYTES} bytes");
+    }
+    let mut header_bytes = first_line.len();
     let mut content_length = parse_content_length_header(first_trimmed)?;
     loop {
-        let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
+        let remaining = MAX_MCP_HEADER_BYTES.saturating_sub(header_bytes);
+        let Some(line) = read_line_limited(reader, remaining)? else {
             return Ok(None);
-        }
+        };
+        header_bytes = header_bytes.saturating_add(line.len());
         let trimmed = trim_line_end(&line);
         if trimmed.is_empty() {
             break;
@@ -1258,17 +1277,29 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<McpMessage>> {
     }))
 }
 
-fn read_non_empty_line(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
+fn read_non_empty_line(reader: &mut impl BufRead, max_bytes: usize) -> Result<Option<Vec<u8>>> {
     loop {
-        let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
+        let Some(line) = read_line_limited(reader, max_bytes)? else {
             return Ok(None);
-        }
+        };
         if !trim_line_end(&line).is_empty() {
             return Ok(Some(line));
         }
     }
+}
+
+fn read_line_limited(reader: &mut impl BufRead, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let read = reader
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.len() > max_bytes {
+        bail!("MCP line exceeds maximum size of {max_bytes} bytes");
+    }
+    Ok(Some(line))
 }
 
 fn trim_line_end(line: &[u8]) -> &[u8] {
@@ -1500,14 +1531,6 @@ fn parse_preview_mode(mode: &str) -> Result<edit::PreviewMode> {
     }
 }
 
-fn store_op(op: EditOp) -> store::Op {
-    match op {
-        EditOp::Replace => store::Op::Replace,
-        EditOp::Insert => store::Op::Insert,
-        EditOp::Delete => store::Op::Delete,
-    }
-}
-
 fn format_patch_applied(path: &str, result: &edit::EditResult, hash: &str) -> String {
     if result.lines_added == 0 && result.lines_removed == 0 {
         return format!(
@@ -1520,19 +1543,6 @@ fn format_patch_applied(path: &str, result: &edit::EditResult, hash: &str) -> St
         "patch applied to {path}: +{} -{} lines ({} total), hash:{hash}",
         result.lines_added, result.lines_removed, result.line_count
     )
-}
-
-fn effective_edit_op(
-    op: Option<EditOp>,
-    replace_text: Option<&str>,
-    anchor: Option<&str>,
-) -> Result<EditOp> {
-    match (op, replace_text.is_some(), anchor.is_some()) {
-        (Some(op), false, false) => Ok(op),
-        (None, true, false) => Ok(EditOp::Replace),
-        (None, false, true) => Ok(EditOp::Insert),
-        _ => bail!("patch requires exactly one target: op, replace_text, or anchor"),
-    }
 }
 
 fn edit_op_label(
@@ -1685,6 +1695,29 @@ mod tests {
         };
 
         assert!(err.to_string().contains("exceeds maximum MCP message size"));
+    }
+
+    #[test]
+    fn read_message_rejects_oversized_header_lines() {
+        let mut input = vec![b'x'; MAX_MCP_HEADER_BYTES + 1];
+        input.push(b'\n');
+        let mut reader = Cursor::new(input);
+
+        let err = match read_message(&mut reader) {
+            Ok(_) => panic!("expected oversized header error"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("headers exceed maximum size"));
+    }
+
+    #[test]
+    fn limited_line_reader_rejects_oversized_newline_frames() {
+        let mut reader = Cursor::new(b"12345\n".to_vec());
+
+        let err = read_non_empty_line(&mut reader, 4).unwrap_err();
+
+        assert!(err.to_string().contains("line exceeds maximum size"));
     }
 
     #[test]
@@ -1993,7 +2026,7 @@ mod tests {
     #[test]
     fn read_tool_returns_hash_content_ranges_and_unchanged_response() {
         let root = tempfile::tempdir().unwrap();
-        let server = indexed_server(&root, &[("src/app.rs", "one\ntwo\nthree\n")]);
+        let mut server = indexed_server(&root, &[("src/app.rs", "one\ntwo\nthree\n")]);
 
         let full = server.tool_read(&json!({"path": "src/app.rs"})).unwrap();
         let hash = full.structured["hash"].as_str().unwrap().to_string();

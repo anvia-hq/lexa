@@ -7,10 +7,9 @@ use crate::engine::Engine;
 use crate::glob::match_glob;
 use hashbrown::HashSet;
 
-use super::config::{AuditConfig, AuditIgnore, DEFAULT_GENERATED_IGNORE_GLOBS};
+use super::config::{AuditConfig, AuditIgnore, AuditIncludes, DEFAULT_GENERATED_IGNORE_GLOBS};
 use super::report::AuditFinding;
 use super::scope::AuditScope;
-use super::AuditIncludes;
 
 pub(crate) fn collect_findings(
     engine: &Engine,

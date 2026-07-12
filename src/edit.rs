@@ -2,8 +2,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::ValueEnum;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::engine::hash_content;
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EditOp {
@@ -146,8 +149,8 @@ fn build_new_content(old_content: &str, req: &EditRequest) -> Result<String> {
         return insert_at_anchor(old_content, anchor, placement, content);
     }
 
-    let mut lines: Vec<String> = old_content.lines().map(ToString::to_string).collect();
-    let had_trailing_newline = old_content.ends_with('\n');
+    let lines = line_spans(old_content);
+    let newline = dominant_newline(old_content);
 
     match req
         .op
@@ -156,27 +159,26 @@ fn build_new_content(old_content: &str, req: &EditRequest) -> Result<String> {
         EditOp::Replace => {
             let (start, end) = concrete_range(req)?;
             ensure_range_in_bounds(start, end, lines.len())?;
-            let replacement = replacement_lines(req)?;
-            lines.splice(start..end, replacement);
+            let replacement = required_content(req)?;
+            replace_line_range(old_content, &lines, start, end, replacement, newline)
         }
         EditOp::Insert => {
-            let replacement = replacement_lines(req)?;
+            let replacement = required_content(req)?;
             let after = req.after.unwrap_or(0) as usize;
-            let insert_at = after.min(lines.len());
-            lines.splice(insert_at..insert_at, replacement);
+            insert_after_line(
+                old_content,
+                &lines,
+                after.min(lines.len()),
+                replacement,
+                newline,
+            )
         }
         EditOp::Delete => {
             let (start, end) = concrete_range(req)?;
             ensure_range_in_bounds(start, end, lines.len())?;
-            lines.drain(start..end);
+            replace_line_range(old_content, &lines, start, end, "", newline)
         }
     }
-
-    let mut result = lines.join("\n");
-    if had_trailing_newline && !result.is_empty() {
-        result.push('\n');
-    }
-    Ok(result)
 }
 
 fn validate_target_shape(req: &EditRequest) -> Result<()> {
@@ -294,12 +296,159 @@ fn concrete_range(req: &EditRequest) -> Result<(usize, usize)> {
     Ok(((start - 1) as usize, end as usize))
 }
 
-fn replacement_lines(req: &EditRequest) -> Result<Vec<String>> {
-    let content = req
-        .content
+fn required_content(req: &EditRequest) -> Result<&str> {
+    req.content
         .as_deref()
-        .ok_or_else(|| anyhow!("replace/insert requires --content or --content-file"))?;
-    Ok(content.lines().map(ToString::to_string).collect())
+        .ok_or_else(|| anyhow!("replace/insert requires --content or --content-file"))
+}
+
+#[derive(Clone, Copy)]
+struct LineSpan {
+    start: usize,
+    content_end: usize,
+    end: usize,
+}
+
+fn line_spans(content: &str) -> Vec<LineSpan> {
+    let bytes = content.as_bytes();
+    let mut spans = Vec::new();
+    let mut start = 0;
+
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'\n' {
+            continue;
+        }
+        let content_end = if index > start && bytes[index - 1] == b'\r' {
+            index - 1
+        } else {
+            index
+        };
+        spans.push(LineSpan {
+            start,
+            content_end,
+            end: index + 1,
+        });
+        start = index + 1;
+    }
+
+    if start < bytes.len() {
+        spans.push(LineSpan {
+            start,
+            content_end: bytes.len(),
+            end: bytes.len(),
+        });
+    }
+
+    spans
+}
+
+fn dominant_newline(content: &str) -> &'static str {
+    let bytes = content.as_bytes();
+    let mut crlf = 0usize;
+    let mut lf = 0usize;
+    let mut first = None;
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            if index > 0 && bytes[index - 1] == b'\r' {
+                crlf += 1;
+                first.get_or_insert("\r\n");
+            } else {
+                lf += 1;
+                first.get_or_insert("\n");
+            }
+        }
+    }
+    match crlf.cmp(&lf) {
+        std::cmp::Ordering::Greater => "\r\n",
+        std::cmp::Ordering::Less => "\n",
+        std::cmp::Ordering::Equal => first.unwrap_or("\n"),
+    }
+}
+
+fn normalize_newlines(content: &str, newline: &str) -> String {
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    if newline == "\n" {
+        normalized
+    } else {
+        normalized.replace('\n', newline)
+    }
+}
+
+fn replace_line_range(
+    old_content: &str,
+    lines: &[LineSpan],
+    start: usize,
+    end: usize,
+    replacement: &str,
+    newline: &str,
+) -> Result<String> {
+    ensure_range_in_bounds(start, end, lines.len())?;
+    let replace_start = lines[start].start;
+    let replace_end = lines[end - 1].end;
+    let target_had_ending = lines[end - 1].end > lines[end - 1].content_end;
+    let suffix = &old_content[replace_end..];
+    let mut replacement = normalize_newlines(replacement, newline);
+
+    if !replacement.is_empty()
+        && !has_line_ending(&replacement)
+        && (!suffix.is_empty() || target_had_ending)
+    {
+        replacement.push_str(newline);
+    }
+
+    let mut result = String::with_capacity(
+        old_content.len() - (replace_end - replace_start) + replacement.len(),
+    );
+    result.push_str(&old_content[..replace_start]);
+    result.push_str(&replacement);
+    result.push_str(suffix);
+    Ok(result)
+}
+
+fn insert_after_line(
+    old_content: &str,
+    lines: &[LineSpan],
+    after: usize,
+    content: &str,
+    newline: &str,
+) -> Result<String> {
+    if content.is_empty() {
+        return Ok(old_content.to_string());
+    }
+
+    let insert_at = if after == 0 { 0 } else { lines[after - 1].end };
+    let prefix = &old_content[..insert_at];
+    let suffix = &old_content[insert_at..];
+    let insertion = normalize_newlines(content, newline);
+    let needs_prefix_separator =
+        !prefix.is_empty() && !has_line_ending(prefix) && !starts_with_line_ending(&insertion);
+    let needs_suffix_separator = !suffix.is_empty() && !has_line_ending(&insertion);
+    let preserve_trailing_ending =
+        suffix.is_empty() && has_line_ending(old_content) && !has_line_ending(&insertion);
+
+    let mut result = String::with_capacity(
+        old_content.len()
+            + insertion.len()
+            + newline.len() * usize::from(needs_prefix_separator || needs_suffix_separator),
+    );
+    result.push_str(prefix);
+    if needs_prefix_separator {
+        result.push_str(newline);
+    }
+    result.push_str(&insertion);
+    if needs_suffix_separator || preserve_trailing_ending {
+        result.push_str(newline);
+    }
+    result.push_str(suffix);
+    Ok(result)
+}
+
+fn has_line_ending(content: &str) -> bool {
+    content.ends_with('\n') || content.ends_with('\r')
+}
+
+fn starts_with_line_ending(content: &str) -> bool {
+    content.starts_with('\n') || content.starts_with('\r')
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<()> {
@@ -308,32 +457,69 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file");
-    let tmp_path = temp_path(parent, filename, content);
+    let existing_permissions = std::fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let (tmp_path, mut file) = create_temp_file(parent, filename)?;
 
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
-            .with_context(|| format!("failed to create {}", tmp_path.display()))?;
+    let write_result = (|| -> Result<()> {
         file.write_all(content.as_bytes())
             .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        file.sync_all().ok();
+        if let Some(permissions) = existing_permissions {
+            file.set_permissions(permissions).with_context(|| {
+                format!("failed to preserve permissions for {}", path.display())
+            })?;
+        }
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(error);
     }
+    drop(file);
 
     std::fs::rename(&tmp_path, path).with_context(|| {
         let _ = std::fs::remove_file(&tmp_path);
         format!("failed to replace {}", path.display())
     })?;
+
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("failed to sync directory {}", parent.display()))?;
+
     Ok(())
 }
 
-fn temp_path(parent: &Path, filename: &str, content: &str) -> PathBuf {
-    parent.join(format!(
-        ".{filename}.lexa-edit-{}-{:x}.tmp",
-        std::process::id(),
-        hash_content(content)
-    ))
+fn create_temp_file(parent: &Path, filename: &str) -> Result<(PathBuf, std::fs::File)> {
+    for _ in 0..16 {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = parent.join(format!(
+            ".{filename}.lexa-edit-{}-{nonce:x}-{sequence:x}.tmp",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("failed to create {}", path.display()))
+            }
+        }
+    }
+    bail!(
+        "failed to allocate a unique temporary file in {}",
+        parent.display()
+    )
 }
 
 fn build_preview(old_content: &str, new_content: &str, mode: PreviewMode) -> String {
@@ -539,6 +725,52 @@ mod tests {
     }
 
     #[test]
+    fn line_edits_preserve_crlf_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "app.rs", "one\r\ntwo\r\nthree\r\n");
+        let mut req = request(path.clone(), EditOp::Replace);
+        req.range_start = Some(2);
+        req.range_end = Some(2);
+        req.content = Some("TWO\nextra".to_string());
+
+        let result = apply_edit(&req).unwrap();
+
+        assert_eq!(result.new_content, "one\r\nTWO\r\nextra\r\nthree\r\n");
+        assert_eq!(std::fs::read(path).unwrap(), result.new_content.as_bytes());
+    }
+
+    #[test]
+    fn line_edits_leave_unaffected_mixed_endings_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "mixed.txt", "one\r\ntwo\nthree\r\n");
+        let mut req = request(path, EditOp::Replace);
+        req.range_start = Some(2);
+        req.range_end = Some(2);
+        req.content = Some("TWO".to_string());
+
+        let result = apply_edit(&req).unwrap();
+
+        assert_eq!(result.new_content, "one\r\nTWO\r\nthree\r\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_edit_preserves_executable_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "tool.sh", "#!/bin/sh\necho old\n");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut req = request(path.clone(), EditOp::Replace);
+        req.range_start = Some(2);
+        req.content = Some("echo new".to_string());
+
+        apply_edit(&req).unwrap();
+
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o755);
+    }
+
+    #[test]
     fn insert_supports_start_middle_and_after_end_positions() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_file(&dir, "notes.txt", "b\nc\n");
@@ -563,6 +795,20 @@ mod tests {
             apply_edit(&end).unwrap().new_content,
             "a\nb\nbetween\nc\nz\n"
         );
+    }
+
+    #[test]
+    fn inserting_a_newline_after_unterminated_last_line_adds_one_ending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "notes.txt", "one\ntwo");
+        let mut req = request(path, EditOp::Insert);
+        req.after = Some(99);
+        req.content = Some("\n".to_string());
+
+        let result = apply_edit(&req).unwrap();
+
+        assert_eq!(result.new_content, "one\ntwo\n");
+        assert_eq!(result.line_count, 2);
     }
 
     #[test]

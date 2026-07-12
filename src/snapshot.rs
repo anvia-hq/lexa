@@ -1,15 +1,15 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::engine::Engine;
+use crate::types::EngineSnapshotData;
 
 const MAGIC: &[u8; 8] = b"LEXA\0\0\0\0";
-const FORMAT_VERSION: u16 = 1;
+const FORMAT_VERSION: u16 = 2;
+const BINARY_V1_FORMAT_VERSION: u16 = 1;
 const MAX_SNAPSHOT_BYTES: usize = 500 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,19 +46,19 @@ pub fn write_snapshot(engine: &Engine, output_path: impl AsRef<Path>) -> Result<
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let root_hash = compute_root_hash(&data.file_meta);
     let file_count = data.file_meta.len() as u32;
 
     let payload = SnapshotPayload {
         created_at,
-        root_hash,
+        root_hash: 0,
         outlines: data.outlines,
         file_meta: data.file_meta,
         contents: data.contents,
         forward_deps: data.forward_deps,
     };
 
-    let encoded = bincode::serialize(&payload).context("Failed to serialize snapshot")?;
+    let encoded = postcard::to_allocvec(&payload).context("Failed to serialize snapshot")?;
+    let root_hash = payload_checksum(&encoded);
 
     let path = output_path.as_ref();
     if let Some(parent) = path.parent() {
@@ -130,21 +130,12 @@ fn temp_snapshot_path(path: &Path) -> PathBuf {
     parent.join(format!(".{filename}.{}.{}.tmp", std::process::id(), nonce))
 }
 
-fn compute_root_hash(file_meta: &[(String, crate::types::FileMeta)]) -> u64 {
-    let mut entries: Vec<_> = file_meta.iter().collect();
-    entries.sort_by_key(|(path, _)| path.as_str());
-
-    let mut hasher = DefaultHasher::new();
-    for (path, meta) in entries {
-        path.hash(&mut hasher);
-        meta.language.hash(&mut hasher);
-        meta.line_count.hash(&mut hasher);
-        meta.byte_size.hash(&mut hasher);
-        meta.symbol_count.hash(&mut hasher);
-        meta.modified_ms.hash(&mut hasher);
-        meta.indexed.hash(&mut hasher);
-    }
-    hasher.finish()
+fn payload_checksum(payload: &[u8]) -> u64 {
+    let hash = blake3::hash(payload);
+    let prefix: [u8; 8] = hash.as_bytes()[..8]
+        .try_into()
+        .expect("BLAKE3 hashes always contain eight bytes");
+    u64::from_le_bytes(prefix)
 }
 
 pub fn read_snapshot(path: impl AsRef<Path>) -> Result<SnapshotData> {
@@ -196,7 +187,7 @@ fn read_current_snapshot(mut reader: BufReader<fs::File>) -> Result<SnapshotData
         .context("Failed to read snapshot root hash")?;
     let root_hash = u64::from_le_bytes(root_hash_bytes);
 
-    let payload = read_payload(reader)?;
+    let payload = read_payload(reader, version, root_hash)?;
     Ok(SnapshotData {
         header: SnapshotHeader {
             magic: *MAGIC,
@@ -240,7 +231,11 @@ fn read_legacy_snapshot(
     Ok(snapshot)
 }
 
-fn read_payload(mut reader: BufReader<fs::File>) -> Result<SnapshotPayload> {
+fn read_payload(
+    mut reader: BufReader<fs::File>,
+    version: u16,
+    expected_checksum: u64,
+) -> Result<SnapshotPayload> {
     let mut len_bytes = [0u8; 8];
     reader
         .read_exact(&mut len_bytes)
@@ -252,7 +247,21 @@ fn read_payload(mut reader: BufReader<fs::File>) -> Result<SnapshotPayload> {
         .read_exact(&mut data)
         .context("Failed to read snapshot data")?;
 
-    bincode::deserialize(&data).context("Failed to deserialize snapshot")
+    match version {
+        BINARY_V1_FORMAT_VERSION => {
+            bincode::deserialize(&data).context("Failed to deserialize v1 snapshot")
+        }
+        FORMAT_VERSION => {
+            let actual_checksum = payload_checksum(&data);
+            if actual_checksum != expected_checksum {
+                anyhow::bail!(
+                    "Snapshot checksum mismatch: expected {expected_checksum:016x}, actual {actual_checksum:016x}"
+                );
+            }
+            postcard::from_bytes(&data).context("Failed to deserialize v2 snapshot")
+        }
+        _ => anyhow::bail!("Unsupported snapshot version {version}"),
+    }
 }
 
 fn checked_snapshot_len(len: u64) -> Result<usize> {
@@ -263,43 +272,31 @@ fn checked_snapshot_len(len: u64) -> Result<usize> {
 }
 
 pub fn load_snapshot_into_engine(engine: &mut Engine, path: impl AsRef<Path>) -> Result<usize> {
+    let path = path.as_ref();
     let snapshot = read_snapshot(path)?;
     let count = snapshot.header.file_count as usize;
-    engine.load_from_snapshot(snapshot);
+    engine.load_snapshot_data(snapshot.into_engine_data());
+    engine.set_freshness_watermark(snapshot_modified_ns(path));
     Ok(count)
 }
 
-pub struct SnapshotDataRaw {
-    pub outlines: Vec<(String, crate::types::FileOutline)>,
-    pub file_meta: Vec<(String, crate::types::FileMeta)>,
-    pub contents: Vec<(String, String)>,
-    pub forward_deps: Vec<(String, Vec<String>)>,
+fn snapshot_modified_ns(path: &Path) -> Option<u128> {
+    path.metadata()
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_nanos())
 }
 
 impl SnapshotData {
-    pub fn into_raw(self) -> SnapshotDataRaw {
-        SnapshotDataRaw {
+    pub fn into_engine_data(self) -> EngineSnapshotData {
+        EngineSnapshotData {
             outlines: self.outlines,
             file_meta: self.file_meta,
             contents: self.contents,
             forward_deps: self.forward_deps,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn from_raw(raw: SnapshotDataRaw) -> Self {
-        Self {
-            header: SnapshotHeader {
-                magic: *MAGIC,
-                version: FORMAT_VERSION,
-                file_count: raw.file_meta.len() as u32,
-                created_at: 0,
-                root_hash: 0,
-            },
-            outlines: raw.outlines,
-            file_meta: raw.file_meta,
-            contents: raw.contents,
-            forward_deps: raw.forward_deps,
         }
     }
 }
@@ -323,6 +320,59 @@ mod tests {
         assert_eq!(&bytes[..MAGIC.len()], MAGIC);
         let mut loaded = Engine::new(4);
         let count = load_snapshot_into_engine(&mut loaded, &path).unwrap();
+        assert_eq!(count, 1);
+        assert!(!loaded.find_symbol("main").is_empty());
+    }
+
+    #[test]
+    fn snapshot_v2_rejects_payload_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.lexa");
+        let mut engine = Engine::new(4);
+        engine.index_file("src/main.rs", "fn main() {}\n");
+        write_snapshot(&engine, &path).unwrap();
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.last_mut().unwrap();
+        *last ^= 0xff;
+        std::fs::write(&path, bytes).unwrap();
+
+        let err = read_snapshot(&path).unwrap_err();
+        assert!(err.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn snapshot_reader_accepts_v1_binary_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.lexa");
+        let mut engine = Engine::new(4);
+        engine.index_file("src/main.rs", "fn main() {}\n");
+        let data = engine.to_snapshot_data();
+        let payload = SnapshotPayload {
+            created_at: 1,
+            root_hash: 0,
+            outlines: data.outlines,
+            file_meta: data.file_meta,
+            contents: data.contents,
+            forward_deps: data.forward_deps,
+        };
+        let encoded = bincode::serialize(&payload).unwrap();
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(MAGIC).unwrap();
+        file.write_all(&BINARY_V1_FORMAT_VERSION.to_le_bytes())
+            .unwrap();
+        file.write_all(&(payload.file_meta.len() as u32).to_le_bytes())
+            .unwrap();
+        file.write_all(&1u64.to_le_bytes()).unwrap();
+        file.write_all(&0u64.to_le_bytes()).unwrap();
+        file.write_all(&(encoded.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&encoded).unwrap();
+        drop(file);
+
+        let mut loaded = Engine::new(4);
+        let count = load_snapshot_into_engine(&mut loaded, &path).unwrap();
+
         assert_eq!(count, 1);
         assert!(!loaded.find_symbol("main").is_empty());
     }

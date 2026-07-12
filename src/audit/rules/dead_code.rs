@@ -2,9 +2,8 @@ use crate::engine::Engine;
 use crate::glob::match_glob;
 use crate::types::{Language, Symbol, SymbolKind};
 
-use crate::audit::config::{AuditConfig, DeadCodeConfig, RuleSetting};
+use crate::audit::config::{AuditConfig, AuditIncludes, DeadCodeConfig, RuleSetting};
 use crate::audit::report::{AuditActionability, AuditFinding, AuditNextStep, AuditSeverity};
-use crate::audit::AuditIncludes;
 use serde_json::json;
 
 pub(crate) fn audit_dead_code_candidates(

@@ -1,10 +1,8 @@
-use crate::cache::ContentCache;
 use crate::glob::match_glob;
 use crate::index::symbol::SymbolIndex;
 use crate::index::trigram::TrigramIndex;
 use crate::index::word::WordIndex;
 use crate::parser;
-use crate::snapshot;
 use crate::store::{Op, Store};
 use crate::types::*;
 use hashbrown::{HashMap, HashSet};
@@ -129,27 +127,38 @@ pub struct Engine {
     outlines: HashMap<String, FileOutline>,
     file_meta: HashMap<String, FileMeta>,
     contents: HashMap<String, String>,
-    content_cache: ContentCache,
     symbol_index: SymbolIndex,
     trigram_index: TrigramIndex,
     word_index: WordIndex,
     dep_graph: DepGraph,
     store: Store,
+    freshness_watermark_ns: Option<u128>,
 }
 
 impl Engine {
-    pub fn new(cache_capacity: u32) -> Self {
+    pub fn new(_cache_capacity: u32) -> Self {
         Self {
             outlines: HashMap::new(),
             file_meta: HashMap::new(),
             contents: HashMap::new(),
-            content_cache: ContentCache::new(cache_capacity),
             symbol_index: SymbolIndex::new(),
             trigram_index: TrigramIndex::new(),
             word_index: WordIndex::new(),
             dep_graph: DepGraph::new(),
             store: Store::new(),
+            freshness_watermark_ns: None,
         }
+    }
+
+    pub(crate) fn set_freshness_watermark(&mut self, watermark_ns: Option<u128>) {
+        self.freshness_watermark_ns = watermark_ns;
+    }
+
+    pub(crate) fn content_unchanged_since_snapshot(&self, change_ns: Option<u128>) -> bool {
+        matches!(
+            (change_ns, self.freshness_watermark_ns),
+            (Some(change), Some(watermark)) if change <= watermark
+        )
     }
 
     pub fn index_file(&mut self, path: &str, content: &str) {
@@ -195,8 +204,6 @@ impl Engine {
         self.symbol_index.index_file(&outline);
         self.trigram_index.index_file(path, content);
         self.word_index.index_file(path, content);
-        self.content_cache
-            .put(path.to_string(), content.to_string());
         self.contents.insert(path.to_string(), content.to_string());
         self.file_meta.insert(
             path.to_string(),
@@ -242,6 +249,13 @@ impl Engine {
         self.index_file_meta_only_no_rebuild(path, byte_size, modified_ms);
     }
 
+    pub(crate) fn update_file_metadata(&mut self, path: &str, byte_size: u64, modified_ms: u64) {
+        if let Some(meta) = self.file_meta.get_mut(path) {
+            meta.byte_size = byte_size;
+            meta.modified_ms = modified_ms;
+        }
+    }
+
     pub fn remove_file(&mut self, path: &str) {
         self.remove_file_no_dep_rebuild(path);
         self.rebuild_dep_graph();
@@ -251,7 +265,6 @@ impl Engine {
         self.outlines.remove(path);
         self.file_meta.remove(path);
         self.contents.remove(path);
-        self.content_cache.remove(path);
         self.symbol_index.remove_file(path);
         self.trigram_index.remove_file(path);
         self.word_index.remove_file(path);
@@ -461,17 +474,18 @@ impl Engine {
 
         let first_word = words[0];
         let mut candidate_paths: Vec<String> = Vec::new();
+        let mut candidate_set = HashSet::new();
 
         let word_hits = self.word_index.search(first_word);
         for (path, _line_num) in &word_hits {
-            if !candidate_paths.contains(path) {
+            if candidate_set.insert(path.clone()) {
                 candidate_paths.push(path.clone());
             }
         }
 
         let trigram_candidates = self.trigram_index.candidates(first_word);
         for path in trigram_candidates {
-            if !candidate_paths.contains(&path) {
+            if candidate_set.insert(path.clone()) {
                 candidate_paths.push(path);
             }
         }
@@ -1664,33 +1678,21 @@ impl Engine {
     }
 
     fn content_for(&self, path: &str) -> Option<&str> {
-        self.content_cache
-            .get(path)
-            .or_else(|| self.contents.get(path).map(String::as_str))
+        self.contents.get(path).map(String::as_str)
     }
 
     fn rebuild_dep_graph(&mut self) {
-        let outlines: Vec<(String, FileOutline)> = self
-            .outlines
-            .iter()
-            .map(|(path, outline)| (path.clone(), outline.clone()))
-            .collect();
-
         self.dep_graph.clear();
-        for (path, outline) in outlines {
-            let resolution = imports::resolve_imports(
-                &path,
-                &outline.imports,
-                outline.language,
-                &self.file_meta,
-            );
+        for (path, outline) in &self.outlines {
+            let resolution =
+                imports::resolve_imports(path, &outline.imports, outline.language, &self.file_meta);
             let unresolved = resolution
                 .unresolved
                 .into_iter()
-                .map(|import| unresolved_import_record(&path, &outline, import))
+                .map(|import| unresolved_import_record(path, outline, import))
                 .collect();
             self.dep_graph
-                .set_resolution(&path, resolution.deps, unresolved);
+                .set_resolution(path, resolution.deps, unresolved);
         }
     }
 
@@ -1698,8 +1700,8 @@ impl Engine {
         self.rebuild_dep_graph();
     }
 
-    pub fn to_snapshot_data(&self) -> snapshot::SnapshotDataRaw {
-        snapshot::SnapshotDataRaw {
+    pub fn to_snapshot_data(&self) -> EngineSnapshotData {
+        EngineSnapshotData {
             outlines: self
                 .outlines
                 .iter()
@@ -1719,40 +1721,38 @@ impl Engine {
         }
     }
 
-    pub fn load_from_snapshot(&mut self, data: snapshot::SnapshotData) {
-        let raw = data.into_raw();
-
+    pub fn load_snapshot_data(&mut self, data: EngineSnapshotData) {
         self.outlines.clear();
         self.file_meta.clear();
         self.contents.clear();
-        self.content_cache.clear();
         self.symbol_index = SymbolIndex::new();
         self.trigram_index = TrigramIndex::new();
         self.word_index = WordIndex::new();
         self.dep_graph.clear();
         self.store = Store::new();
+        self.freshness_watermark_ns = None;
 
-        for (path, outline) in raw.outlines {
+        for (path, outline) in data.outlines {
             self.symbol_index.index_file(&outline);
             self.outlines.insert(path, outline);
         }
 
-        for (path, meta) in raw.file_meta {
+        for (path, meta) in data.file_meta {
             self.file_meta.insert(path, meta);
         }
 
-        for (path, content) in raw.contents {
+        for (path, content) in data.contents {
             self.trigram_index.index_file(&path, &content);
             self.word_index.index_file(&path, &content);
-            self.content_cache.put(path.clone(), content.clone());
             self.contents.insert(path, content);
         }
 
-        let _ = raw.forward_deps;
+        let _ = data.forward_deps;
         self.rebuild_dep_graph();
     }
 
     pub fn index_project(&mut self, root: impl AsRef<Path>) -> usize {
+        self.freshness_watermark_ns = None;
         let root = root.as_ref();
         let files = crate::walker::walk_project_meta(root);
         let count = files.len();
@@ -1786,7 +1786,6 @@ impl Engine {
     fn index_file_meta_only_no_rebuild(&mut self, path: &str, byte_size: u64, modified_ms: u64) {
         self.outlines.remove(path);
         self.contents.remove(path);
-        self.content_cache.remove(path);
         self.symbol_index.remove_file(path);
         self.trigram_index.remove_file(path);
         self.word_index.remove_file(path);
@@ -2538,7 +2537,7 @@ mod tests {
         let mut engine = Engine::new(4);
         engine.index_file("stale.rs", "fn stale() {}\n");
 
-        engine.load_from_snapshot(snapshot::SnapshotData::from_raw(data));
+        engine.load_snapshot_data(data);
 
         assert!(engine
             .find_symbol("fresh")

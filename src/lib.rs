@@ -1,7 +1,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+#[doc(hidden)]
+pub mod application;
 pub mod audit;
-mod cache;
 pub mod edit;
 pub mod engine;
 pub mod freshness;
