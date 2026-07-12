@@ -117,6 +117,8 @@ case ":$PATH:" in
   *":$install_dir:"*) ;;
   *)
     printf 'Add this directory to PATH to run lexa from anywhere:\n'
+    # $PATH must remain literal in the instruction printed for the user.
+    # shellcheck disable=SC2016
     printf '  export PATH="%s:$PATH"\n' "$install_dir"
     ;;
 esac
