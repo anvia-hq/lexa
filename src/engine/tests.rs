@@ -37,6 +37,21 @@ fn load_from_snapshot_replaces_existing_engine_state() {
 }
 
 #[test]
+fn invalid_hydrated_indexes_fall_back_to_content_rebuild() {
+    let mut source = Engine::new(4);
+    source.index_file("src/main.rs", "fn searchable_token() {}\n");
+    let mut data = source.to_snapshot_data();
+    let indexes = data.indexes.as_mut().unwrap();
+    indexes.words.postings[0].1[0].0 = u32::MAX;
+
+    let mut loaded = Engine::new(4);
+    loaded.load_snapshot_data(data);
+
+    assert!(!loaded.find_symbol("searchable_token").is_empty());
+    assert!(!loaded.search("searchable_token", 5).is_empty());
+}
+
+#[test]
 fn read_file_out_of_range_returns_empty_content() {
     let mut engine = Engine::new(4);
     engine.index_file("a.rs", "one\ntwo\n");
@@ -571,6 +586,35 @@ fn project_index_rebuilds_dependency_graph_once_after_batch() {
     assert_eq!(engine.get_depends_on("src/a.rs"), vec!["src/b.rs"]);
 
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_index_parallel_path_preserves_search_and_dependencies() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for index in 0..64 {
+        let import = if index > 0 {
+            format!("use crate::module_{};\n", index - 1)
+        } else {
+            String::new()
+        };
+        std::fs::write(
+            src.join(format!("module_{index}.rs")),
+            format!("{import}pub fn token_{index}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let mut engine = Engine::new(4);
+    assert_eq!(engine.index_project(root.path()), 64);
+
+    assert!(!engine.find_symbol("token_63").is_empty());
+    assert!(!engine.search("token_63", 5).is_empty());
+    assert_eq!(
+        engine.get_depends_on("src/module_63.rs"),
+        vec!["src/module_62.rs"]
+    );
 }
 
 #[test]

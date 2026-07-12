@@ -4,7 +4,8 @@
 
 ### Added
 
-- Added checksummed v2 graph snapshots with transparent v1 snapshot loading.
+- Added v3 graph snapshots with full BLAKE3 payload identities, hydrated search and dependency indexes, and transparent v0.9-v2 loading.
+- Added a reproducible performance gate requiring 20% faster 500-file indexing and warm exact search than v0.9.0.
 - Added release-asset checksum verification to the Unix and Windows installers.
 - Added cross-platform, website, dependency-audit, and installer checks to CI.
 
@@ -19,6 +20,8 @@
 
 - Centralized shared CLI/MCP read, patch, create, and audit workflows plus MCP graph lifecycle persistence.
 - Reduced index memory and CPU overhead by removing duplicate content caching and deduplicating word and trigram data.
+- Parallelized parsing and search-index preparation for projects with at least 64 files.
+- Limited exact-word hit materialization to the requested result count.
 
 ## v0.9.0 - 2026-06-30
 

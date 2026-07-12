@@ -142,6 +142,43 @@ impl DepGraph {
         deps.sort_by(|a, b| a.0.cmp(&b.0));
         deps
     }
+
+    pub(crate) fn unresolved_imports_by_path(&self) -> Vec<(String, Vec<UnresolvedImport>)> {
+        let mut unresolved = self
+            .unresolved
+            .iter()
+            .map(|(path, imports)| (path.clone(), imports.clone()))
+            .collect::<Vec<_>>();
+        unresolved.sort_by(|left, right| left.0.cmp(&right.0));
+        unresolved
+    }
+
+    pub(crate) fn from_snapshot(
+        forward: Vec<(String, Vec<String>)>,
+        unresolved: Vec<(String, Vec<UnresolvedImport>)>,
+    ) -> Option<Self> {
+        let mut unresolved_by_path = HashMap::new();
+        for (path, imports) in unresolved {
+            if unresolved_by_path.insert(path, imports).is_some() {
+                return None;
+            }
+        }
+        let mut graph = Self::new();
+        for (path, deps) in forward {
+            let path_unresolved = unresolved_by_path.get(&path).cloned().unwrap_or_default();
+            if graph.forward.contains_key(&path) {
+                return None;
+            }
+            graph.set_resolution(&path, deps, path_unresolved);
+        }
+        if unresolved_by_path
+            .keys()
+            .any(|path| !graph.forward.contains_key(path))
+        {
+            return None;
+        }
+        Some(graph)
+    }
 }
 
 impl Default for DepGraph {

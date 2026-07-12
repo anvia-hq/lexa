@@ -53,6 +53,9 @@ jobs:
       - name: Verify generated docs are in sync
         run: cargo run -p xtask -- gen-skill --check
 
+      - name: Enforce v0.9 performance gates
+        run: cargo run -p xtask -- perf-gate
+
       - name: Audit Rust dependencies
         uses: rustsec/audit-check@v2
         with:

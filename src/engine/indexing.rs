@@ -1,3 +1,5 @@
+use crate::index::trigram::{extract_trigrams, Trigram};
+use crate::index::word::{prepare_word_index, PreparedWordIndex};
 use crate::parser;
 use crate::store::Op;
 use crate::types::*;
@@ -5,6 +7,48 @@ use crate::types::*;
 use super::core::Engine;
 use super::hash_content;
 use super::shared::now_ms;
+
+pub(super) struct PreparedIndexFile {
+    path: String,
+    content: String,
+    modified_ms: u64,
+    language: Language,
+    line_count: u32,
+    byte_size: u64,
+    outline: FileOutline,
+    trigrams: Vec<Trigram>,
+    words: PreparedWordIndex,
+}
+
+pub(super) fn prepare_index_file(
+    path: &str,
+    content: String,
+    modified_ms: u64,
+) -> PreparedIndexFile {
+    let language = detect_language(path);
+    let line_count = content.lines().count().max(1) as u32;
+    let byte_size = content.len() as u64;
+    let outline = parser::parse_file(path, language, &content).unwrap_or_else(|| {
+        let mut outline = FileOutline::new(path.to_string(), language);
+        outline.line_count = line_count;
+        outline.byte_size = byte_size;
+        outline
+    });
+    let trigrams = extract_trigrams(&content);
+    let words = prepare_word_index(&content);
+
+    PreparedIndexFile {
+        path: path.to_string(),
+        content,
+        modified_ms,
+        language,
+        line_count,
+        byte_size,
+        outline,
+        trigrams,
+        words,
+    }
+}
 
 impl Engine {
     pub fn index_file(&mut self, path: &str, content: &str) {
@@ -36,23 +80,35 @@ impl Engine {
         op: Op,
         rebuild_deps: bool,
     ) {
-        let language = detect_language(path);
-        let line_count = content.lines().count().max(1) as u32;
-        let byte_size = content.len() as u64;
+        let prepared = prepare_index_file(path, content.to_string(), modified_ms);
+        self.index_prepared_file(prepared, op, rebuild_deps);
+    }
 
-        let outline = parser::parse_file(path, language, content).unwrap_or_else(|| {
-            let mut o = FileOutline::new(path.to_string(), language);
-            o.line_count = line_count;
-            o.byte_size = byte_size;
-            o
-        });
+    pub(super) fn index_prepared_file(
+        &mut self,
+        prepared: PreparedIndexFile,
+        op: Op,
+        rebuild_deps: bool,
+    ) {
+        let PreparedIndexFile {
+            path,
+            content,
+            modified_ms,
+            language,
+            line_count,
+            byte_size,
+            outline,
+            trigrams,
+            words,
+        } = prepared;
+        let content_hash = hash_content(&content);
 
         self.symbol_index.index_file(&outline);
-        self.trigram_index.index_file(path, content);
-        self.word_index.index_file(path, content);
-        self.contents.insert(path.to_string(), content.to_string());
+        self.trigram_index.index_prepared(&path, trigrams);
+        self.word_index.index_prepared(&path, words);
+        self.contents.insert(path.clone(), content);
         self.file_meta.insert(
-            path.to_string(),
+            path.clone(),
             FileMeta {
                 language,
                 line_count,
@@ -62,21 +118,20 @@ impl Engine {
                 indexed: true,
             },
         );
-        self.outlines.insert(path.to_string(), outline);
+        self.outlines.insert(path.clone(), outline);
         if rebuild_deps {
             self.rebuild_dep_graph();
         }
         match op {
             Op::Snapshot => {
-                self.store
-                    .record_snapshot(path, byte_size, hash_content(content));
+                self.store.record_snapshot(&path, byte_size, content_hash);
             }
             Op::Replace | Op::Insert | Op::Delete | Op::Create => {
                 self.store
-                    .record_edit(path, 0, op, hash_content(content), byte_size);
+                    .record_edit(&path, 0, op, content_hash, byte_size);
             }
             Op::Tombstone => {
-                self.store.record_delete(path, 0);
+                self.store.record_delete(&path, 0);
             }
         }
     }

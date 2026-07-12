@@ -117,7 +117,7 @@ impl Engine {
         let mut results = Vec::new();
         let mut seen: HashSet<(String, u32)> = HashSet::new();
 
-        let word_hits = self.word_index.search(single_word);
+        let word_hits = self.word_index.search_limited(single_word, max_results);
         for (path, line_num) in word_hits {
             if results.len() >= max_results {
                 return results;

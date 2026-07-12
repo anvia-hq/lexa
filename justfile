@@ -13,6 +13,9 @@ build:
 bench:
 	cargo bench --bench engine
 
+perf-gate:
+	cargo run -p xtask -- perf-gate
+
 verify: fmt lint test build
 
 gen-skill:

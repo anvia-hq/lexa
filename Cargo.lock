@@ -647,6 +647,7 @@ dependencies = [
  "ignore",
  "notify",
  "postcard",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

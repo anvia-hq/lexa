@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const START: &str = "<!-- TOOLS START -->\n";
 const END: &str = "<!-- TOOLS END -->\n";
@@ -16,10 +17,20 @@ struct ToolSpec {
     input_schema: Value,
 }
 
+#[derive(Debug, Deserialize)]
+struct CriterionEstimates {
+    mean: CriterionMean,
+}
+
+#[derive(Debug, Deserialize)]
+struct CriterionMean {
+    point_estimate: f64,
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
-        bail!("usage: xtask gen-skill [--check]");
+        bail!("usage: xtask <gen-skill [--check] | perf-gate>");
     };
 
     match command.as_str() {
@@ -28,7 +39,147 @@ fn main() -> Result<()> {
             [flag] if flag == "--check" => gen_skill(true),
             _ => bail!("usage: xtask gen-skill [--check]"),
         },
+        "perf-gate" => match args.collect::<Vec<_>>().as_slice() {
+            [] => perf_gate(),
+            _ => bail!("usage: xtask perf-gate"),
+        },
         other => bail!("unknown xtask command: {other}"),
+    }
+}
+
+fn perf_gate() -> Result<()> {
+    const BASELINE_REF: &str = "v0.9.0";
+    const REQUIRED_IMPROVEMENT: f64 = 0.20;
+    const BENCH_FILTER: &str = "project_index/500|search/exact_word";
+    const METRICS: [(&str, &str); 2] = [
+        ("500-file indexing", "project_index/500"),
+        ("warm exact search", "search/exact_word"),
+    ];
+
+    let repo_root = find_repo_root()?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_root =
+        std::env::temp_dir().join(format!("lexa-perf-gate-{}-{nonce}", std::process::id()));
+    let baseline_root = temp_root.join("baseline");
+    let target_dir = temp_root.join("target");
+    std::fs::create_dir_all(&temp_root)
+        .with_context(|| format!("failed to create {}", temp_root.display()))?;
+
+    let result = (|| -> Result<()> {
+        run_command(
+            Command::new("git")
+                .args(["worktree", "add", "--detach"])
+                .arg(&baseline_root)
+                .arg(BASELINE_REF)
+                .current_dir(&repo_root),
+            "create v0.9 performance worktree",
+        )?;
+
+        run_bench(&baseline_root, &target_dir, BENCH_FILTER)?;
+        let baseline = METRICS
+            .iter()
+            .map(|(_, path)| read_criterion_mean(&target_dir, path))
+            .collect::<Result<Vec<_>>>()?;
+
+        run_bench(&repo_root, &target_dir, BENCH_FILTER)?;
+        let current = METRICS
+            .iter()
+            .map(|(_, path)| read_criterion_mean(&target_dir, path))
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut failed = false;
+        for (((label, _), baseline_ns), current_ns) in METRICS.iter().zip(baseline).zip(current) {
+            let improvement = 1.0 - current_ns / baseline_ns;
+            let passed = improvement >= REQUIRED_IMPROVEMENT;
+            println!(
+                "{label}: v0.9 {}, current {}, improvement {:.1}% [{}]",
+                format_duration_ns(baseline_ns),
+                format_duration_ns(current_ns),
+                improvement * 100.0,
+                if passed { "PASS" } else { "FAIL" }
+            );
+            failed |= !passed;
+        }
+
+        if failed {
+            bail!(
+                "performance gate failed: every metric must improve by at least {:.0}% over {BASELINE_REF}",
+                REQUIRED_IMPROVEMENT * 100.0
+            );
+        }
+        Ok(())
+    })();
+
+    let cleanup = Command::new("git")
+        .args(["worktree", "remove"])
+        .arg(&baseline_root)
+        .current_dir(&repo_root)
+        .status();
+    let cleanup_failed = match cleanup {
+        Ok(status) => !status.success(),
+        Err(_) => true,
+    };
+    if baseline_root.exists() && cleanup_failed {
+        eprintln!(
+            "warning: failed to remove temporary worktree {}",
+            baseline_root.display()
+        );
+    }
+    if let Err(err) = std::fs::remove_dir_all(&temp_root) {
+        eprintln!(
+            "warning: failed to remove temporary benchmark data {}: {err}",
+            temp_root.display()
+        );
+    }
+
+    result
+}
+
+fn run_bench(repo_root: &Path, target_dir: &Path, filter: &str) -> Result<()> {
+    run_command(
+        Command::new("cargo")
+            .args(["bench", "--bench", "engine", "--"])
+            .arg(filter)
+            .arg("--noplot")
+            .env("CARGO_TARGET_DIR", target_dir)
+            .current_dir(repo_root),
+        &format!("run performance benchmarks in {}", repo_root.display()),
+    )
+}
+
+fn run_command(command: &mut Command, description: &str) -> Result<()> {
+    let status = command
+        .status()
+        .with_context(|| format!("failed to {description}"))?;
+    if !status.success() {
+        bail!("{description} failed with {status}");
+    }
+    Ok(())
+}
+
+fn read_criterion_mean(target_dir: &Path, benchmark: &str) -> Result<f64> {
+    let path = target_dir
+        .join("criterion")
+        .join(benchmark)
+        .join("new")
+        .join("estimates.json");
+    let encoded = std::fs::read(&path)
+        .with_context(|| format!("failed to read benchmark result {}", path.display()))?;
+    let estimates: CriterionEstimates = serde_json::from_slice(&encoded)
+        .with_context(|| format!("failed to parse benchmark result {}", path.display()))?;
+    Ok(estimates.mean.point_estimate)
+}
+
+fn format_duration_ns(nanoseconds: f64) -> String {
+    if nanoseconds >= 1_000_000.0 {
+        format!("{:.2} ms", nanoseconds / 1_000_000.0)
+    } else if nanoseconds >= 1_000.0 {
+        format!("{:.2} µs", nanoseconds / 1_000.0)
+    } else {
+        format!("{nanoseconds:.2} ns")
     }
 }
 
