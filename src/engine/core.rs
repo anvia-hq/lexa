@@ -137,7 +137,7 @@ impl Engine {
     pub(crate) fn content_unchanged_since_snapshot(&self, change_ns: Option<u128>) -> bool {
         matches!(
             (change_ns, self.freshness_watermark_ns),
-            (Some(change), Some(watermark)) if change <= watermark
+            (Some(change), Some(watermark)) if change < watermark
         )
     }
 }

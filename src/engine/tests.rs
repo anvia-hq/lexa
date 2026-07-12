@@ -16,6 +16,17 @@ fn snapshot_keeps_all_contents_beyond_cache_capacity() {
 }
 
 #[test]
+fn snapshot_freshness_treats_equal_timestamps_as_ambiguous() {
+    let mut engine = Engine::new(1);
+    engine.set_freshness_watermark(Some(10));
+
+    assert!(engine.content_unchanged_since_snapshot(Some(9)));
+    assert!(!engine.content_unchanged_since_snapshot(Some(10)));
+    assert!(!engine.content_unchanged_since_snapshot(Some(11)));
+    assert!(!engine.content_unchanged_since_snapshot(None));
+}
+
+#[test]
 fn load_from_snapshot_replaces_existing_engine_state() {
     let mut source = Engine::new(4);
     source.index_file("fresh.rs", "fn fresh() {}\n");
