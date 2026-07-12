@@ -22,6 +22,7 @@
 - Reduced index memory and CPU overhead by removing duplicate content caching and deduplicating word and trigram data.
 - Parallelized parsing and search-index preparation for projects with at least 64 files.
 - Limited exact-word hit materialization to the requested result count.
+- Pinned every external GitHub Action to an immutable full-length commit SHA.
 
 ## v0.9.0 - 2026-06-30
 
