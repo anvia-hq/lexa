@@ -15,6 +15,12 @@ pub(crate) fn cmd_search(query: &str, options: SearchOptions, cli: &Cli) -> Resu
     let results = match engine.search_rich(query, &options) {
         Ok(results) => results,
         Err(e) => {
+            if cli.json {
+                return print_agent_result(json!({
+                    "error": "search_failed",
+                    "message": e.to_string(),
+                }));
+            }
             eprintln!("Error: {}", e);
             return Ok(());
         }

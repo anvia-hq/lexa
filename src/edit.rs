@@ -463,13 +463,13 @@ fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let (tmp_path, mut file) = create_temp_file(parent, filename)?;
 
     let write_result = (|| -> Result<()> {
-        file.write_all(content.as_bytes())
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
         if let Some(permissions) = existing_permissions {
             file.set_permissions(permissions).with_context(|| {
                 format!("failed to preserve permissions for {}", path.display())
             })?;
         }
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
         file.sync_all()
             .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
         Ok(())

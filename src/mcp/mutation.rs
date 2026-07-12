@@ -39,6 +39,7 @@ impl McpServer {
                 "unchanged": true,
                 "line_start": line_start,
                 "line_end": line_end,
+                "compact": compact,
                 "content": ""
             })));
         }

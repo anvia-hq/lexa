@@ -5,6 +5,7 @@ use lexa::engine;
 use lexa::output::format_unix_ms_utc;
 use lexa::{audit, pipeline, snapshot};
 use serde_json::json;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::shared::*;
@@ -179,6 +180,7 @@ pub(crate) fn cmd_audit(
     }
 
     if strict && report.summary.high > 0 {
+        std::io::stdout().flush()?;
         std::process::exit(1);
     }
 

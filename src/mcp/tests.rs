@@ -441,9 +441,10 @@ fn read_tool_returns_hash_content_ranges_and_unchanged_response() {
         .contains("two"));
 
     let unchanged = server
-        .tool_read(&json!({"path": "src/app.rs", "if_hash": hash}))
+        .tool_read(&json!({"path": "src/app.rs", "if_hash": hash, "compact": true}))
         .unwrap();
     assert_eq!(unchanged.structured["unchanged"], true);
+    assert_eq!(unchanged.structured["compact"], true);
     assert_eq!(unchanged.structured["content"], "");
 }
 
