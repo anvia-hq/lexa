@@ -1,0 +1,13 @@
+{
+  "name": "lexa-npm-distribution",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "version:check": "node scripts/sync-version.mjs --check",
+    "version:write": "node scripts/sync-version.mjs --write"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

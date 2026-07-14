@@ -1,5 +1,27 @@
 # Install Lexa
 
+## npm
+
+The public npm package is named `lexa-index`; the installed command remains
+`lexa`.
+
+```bash
+npm install -g lexa-index
+lexa --version
+```
+
+It can also be run directly with npx:
+
+```bash
+npx lexa-index --version
+```
+
+npm selects a precompiled Rust executable for macOS ARM64, macOS x64, Linux
+x64, or Windows x64. Rust is not compiled on the user's machine, and no binary
+is downloaded by an install or postinstall script.
+
+The curl and PowerShell installers below remain fully supported.
+
 ## macOS and Linux
 
 ```bash

@@ -18,6 +18,25 @@ stable agent-facing contract.
 
 ## Install
 
+With npm (the package is `lexa-index`, while the command remains `lexa`):
+
+```bash
+npm install -g lexa-index
+lexa --version
+```
+
+Or run the precompiled executable without a global installation:
+
+```bash
+npx lexa-index --version
+```
+
+npm installs the matching precompiled Rust executable; it does not compile
+Rust or download a binary during installation. Supported npm platforms are
+macOS ARM64/x64, Linux x64, and Windows x64.
+
+The existing shell installers remain supported:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/anvia-hq/lexa/main/install.sh | sh
 ```

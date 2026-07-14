@@ -4,6 +4,8 @@
 .DS_Store
 *.swp
 dist/
+npm/.artifacts/
+npm/.stage/
 www/node_modules
 www/dist
 www/src/dist

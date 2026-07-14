@@ -9,9 +9,22 @@ on:
       - "v*"
   pull_request:
   workflow_dispatch:
+    inputs:
+      npm_mode:
+        description: Run the npm release as a dry run or publish from a version tag
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - publish
 
 permissions:
   contents: read
+
+concurrency:
+  group: lexa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -61,12 +74,23 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Node.js for npm packages
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Test npm package tooling
+        working-directory: npm
+        run: |
+          npm test
+          npm run version:check
+
       - name: Set up pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 10
 
-      - name: Set up Node.js
+      - name: Set up Node.js for website
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -100,14 +124,30 @@ jobs:
             exit 1
           }
 
-      - name: Verify release tag is on main
+      - name: Verify release tag and Cargo version
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
           set -euo pipefail
           git fetch origin main
           if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
             echo "Release tags must point to commits already merged to main." >&2
             echo "Delete this tag, merge the PR, then recreate the tag on main." >&2
+            exit 1
+          fi
+          version="$(cargo metadata --format-version 1 --no-deps --locked | jq -r \
+            '.packages[] | select(.name == "lexa") | .version' | head -n1)"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match Cargo version ${version}." >&2
+            exit 1
+          fi
+
+      - name: Restrict manual publication to version tags
+        if: github.event_name == 'workflow_dispatch' && inputs.npm_mode == 'publish'
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" != refs/tags/v* ]]; then
+            echo "Manual npm publication must run against a v* tag." >&2
             exit 1
           fi
 
@@ -132,7 +172,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }}
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [check, test-platforms]
     strategy:
       fail-fast: false
@@ -182,7 +222,7 @@ jobs:
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package and checksum
         shell: bash
         env:
           ARCHIVE_NAME: ${{ matrix.archive }}
@@ -191,17 +231,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          version="${GITHUB_REF_NAME#v}"
+          version="$(cargo metadata --format-version 1 --no-deps --locked | jq -r \
+            '.packages[] | select(.name == "lexa") | .version' | head -n1)"
           package_dir="dist/${ARCHIVE_NAME}-${version}"
           mkdir -p "${package_dir}"
           cp "target/${TARGET}/release/${EXE_NAME}" "${package_dir}/"
           cp README.md LICENSE "${package_dir}/"
 
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            (cd dist && 7z a "${ARCHIVE_NAME}-${version}.zip" "./${ARCHIVE_NAME}-${version}/*")
+            archive="${ARCHIVE_NAME}-${version}.zip"
+            (cd dist && 7z a "${archive}" "./${ARCHIVE_NAME}-${version}/*")
           else
-            tar -czf "dist/${ARCHIVE_NAME}-${version}.tar.gz" -C "dist" "${ARCHIVE_NAME}-${version}"
+            archive="${ARCHIVE_NAME}-${version}.tar.gz"
+            tar -czf "dist/${archive}" -C dist "${ARCHIVE_NAME}-${version}"
           fi
+          (cd dist && sha256sum "${archive}" > "${archive}.sha256")
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -210,14 +254,13 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.sha256
           if-no-files-found: error
 
-  github-release:
-    name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+  release-assets:
+    name: Verify and assemble release assets
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: build
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -225,21 +268,191 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download release artifacts
+      - name: Download native artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: release-assets
           merge-multiple: true
 
-      - name: Add installers and checksums
+      - name: Verify build checksums and create release checksum file
         run: |
-          cp install.sh install.ps1 release-assets/
+          set -euo pipefail
           cd release-assets
+          for checksum in *.sha256; do
+            sha256sum -c "${checksum}"
+          done
+          rm -- *.sha256
+          cp ../install.sh ../install.ps1 .
           for asset in *; do
             if [ "$asset" != "SHA256SUMS" ]; then
               sha256sum "$asset"
             fi
           done > SHA256SUMS
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lexa-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  npm-pack:
+    name: Stage and inspect npm packages
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: release-assets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Install Rust metadata tooling
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Download verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lexa-release-assets
+          path: npm/.artifacts/release
+
+      - name: Verify, stage, pack, and inspect all packages
+        run: |
+          set -euo pipefail
+          node npm/scripts/stage-packages.mjs \
+            --release-assets npm/.artifacts/release \
+            --output npm/.stage
+          node npm/scripts/pack-packages.mjs \
+            --stage npm/.stage \
+            --output npm/.artifacts/tarballs
+          node npm/scripts/write-publish-manifests.mjs \
+            --stage npm/.stage \
+            --tarballs npm/.artifacts/tarballs
+          cd npm/.artifacts/tarballs
+          sha256sum -- *.tgz *-package.json pack-report.json > SHA256SUMS
+
+      - name: Upload npm tarballs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lexa-npm-tarballs
+          path: npm/.artifacts/tarballs/*
+          if-no-files-found: error
+
+  npm-native-test:
+    name: Test npm launcher on ${{ matrix.name }}
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: npm-pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-15
+            package: lexa-index-darwin-arm64
+          - name: macOS Intel
+            os: macos-15-intel
+            package: lexa-index-darwin-x64
+          - name: Linux x64
+            os: ubuntu-latest
+            package: lexa-index-linux-x64
+          - name: Windows x64
+            os: windows-latest
+            package: lexa-index-win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lexa-npm-tarballs
+          path: npm/.artifacts/tarballs
+
+      - name: Verify artifact checksums
+        run: node npm/scripts/verify-checksums.mjs --directory npm/.artifacts/tarballs
+
+      - name: Install packed packages and run native Lexa
+        run: >-
+          node npm/scripts/test-local-install.mjs
+          --tarballs npm/.artifacts/tarballs
+          --platform-package ${{ matrix.package }}
+
+  npm-publish:
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.npm_mode == 'dry-run' && 'Dry run npm publishing' || 'Publish npm packages' }}
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [npm-pack, npm-native-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js for trusted publishing
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Install Rust metadata tooling
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install supported npm CLI
+        run: npm install --global npm@11.18.0
+
+      - name: Download npm tarballs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lexa-npm-tarballs
+          path: npm/.artifacts/tarballs
+
+      - name: Verify artifact checksums
+        run: node npm/scripts/verify-checksums.mjs --directory npm/.artifacts/tarballs
+
+      - name: Publish in dependency order or perform a dry run
+        shell: bash
+        env:
+          DISPATCH_MODE: ${{ inputs.npm_mode }}
+        run: |
+          set -euo pipefail
+          mode="publish"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            mode="${DISPATCH_MODE}"
+          fi
+          node npm/scripts/publish-packages.mjs \
+            --tarballs npm/.artifacts/tarballs \
+            --mode "${mode}" \
+            --expected-owner indrazm
+
+  github-release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-assets
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: lexa-release-assets
+          path: release-assets
 
       - name: Create or update release
         env:
