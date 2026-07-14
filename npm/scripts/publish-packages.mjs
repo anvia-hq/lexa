@@ -184,7 +184,7 @@ async function main() {
     validateManifest(definition, manifest, version);
   }
 
-  // Complete the ownership/availability preflight for all five names before
+  // Complete the ownership/availability preflight for every name before
   // the first registry mutation.
   for (const definition of packageDefinitions) {
     states.set(
@@ -205,7 +205,9 @@ async function main() {
 
   if (mode === "publish") {
     await verifyPublished(packageDefinitions, owner, version);
-    console.log(`Verified all five Lexa npm packages at ${version}.`);
+    console.log(
+      `Verified all ${packageDefinitions.length} Lexa npm packages at ${version}.`,
+    );
   } else {
     console.log("npm publishing dry run completed without registry mutation.");
   }

@@ -39,16 +39,6 @@ export const packageDefinitions = Object.freeze([
     cpu: ["x64"],
   },
   {
-    name: "lexa-index-win32-x64",
-    directory: "win32-x64",
-    archiveBase: "lexa-windows-x86_64",
-    archiveExtension: "zip",
-    archiveBinary: () => "lexa.exe",
-    packageBinary: "bin/lexa.exe",
-    os: ["win32"],
-    cpu: ["x64"],
-  },
-  {
     name: "lexa-index",
     directory: "lexa-index",
     wrapper: true,

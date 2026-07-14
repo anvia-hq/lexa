@@ -16,9 +16,10 @@ It can also be run directly with npx:
 npx lexa-index --version
 ```
 
-npm selects a precompiled Rust executable for macOS ARM64, macOS x64, Linux
-x64, or Windows x64. Rust is not compiled on the user's machine, and no binary
-is downloaded by an install or postinstall script.
+npm selects a precompiled Rust executable for macOS ARM64, macOS x64, or Linux
+x64. Rust is not compiled on the user's machine, and no binary is downloaded
+by an install or postinstall script. Windows remains supported through the
+PowerShell installer below.
 
 The curl and PowerShell installers below remain fully supported.
 

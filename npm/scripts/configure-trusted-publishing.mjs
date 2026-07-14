@@ -47,4 +47,6 @@ for (const { name } of packageDefinitions) {
     throw new Error(`trusted publisher verification failed for ${name}`);
   }
 }
-console.log("Verified trusted publishing for all five Lexa packages.");
+console.log(
+  `Verified trusted publishing for all ${packageDefinitions.length} Lexa packages.`,
+);

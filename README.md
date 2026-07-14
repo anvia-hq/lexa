@@ -33,7 +33,8 @@ npx lexa-index --version
 
 npm installs the matching precompiled Rust executable; it does not compile
 Rust or download a binary during installation. Supported npm platforms are
-macOS ARM64/x64, Linux x64, and Windows x64.
+macOS ARM64/x64 and Linux x64. Windows remains supported through the existing
+PowerShell installer below.
 
 The existing shell installers remain supported:
 

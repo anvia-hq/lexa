@@ -11,7 +11,6 @@ const targets = [
   ["darwin", "arm64", "lexa-index-darwin-arm64/binary"],
   ["darwin", "x64", "lexa-index-darwin-x64/binary"],
   ["linux", "x64", "lexa-index-linux-x64/binary"],
-  ["win32", "x64", "lexa-index-win32-x64/binary"],
 ];
 
 test("maps every supported platform and architecture to its binary export", () => {
@@ -26,20 +25,24 @@ test("rejects unsupported targets clearly", () => {
     () => binarySpecifier("linux", "arm64"),
     /Lexa does not currently support linux-arm64\./u,
   );
+  assert.throws(
+    () => binarySpecifier("win32", "x64"),
+    /Lexa does not currently support win32-x64\./u,
+  );
 });
 
 test("returns an absolute path from the selected platform package", () => {
   const requested = [];
   const resolved = resolveBinaryPath({
-    platform: "win32",
+    platform: "linux",
     architecture: "x64",
     resolve(specifier) {
       requested.push(specifier);
-      return "/temporary/package/bin/lexa.exe";
+      return "/temporary/package/bin/lexa";
     },
   });
-  assert.deepEqual(requested, ["lexa-index-win32-x64/binary"]);
-  assert.equal(resolved, "/temporary/package/bin/lexa.exe");
+  assert.deepEqual(requested, ["lexa-index-linux-x64/binary"]);
+  assert.equal(resolved, "/temporary/package/bin/lexa");
 });
 
 test("explains missing optional platform packages", () => {

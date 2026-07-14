@@ -130,7 +130,7 @@ function main() {
     extractBinary(definition, version, archivePath, destination);
   }
 
-  console.log(`Staged five Lexa npm packages at ${output}.`);
+  console.log(`Staged ${packageDefinitions.length} Lexa npm packages at ${output}.`);
 }
 
 main();

@@ -16,5 +16,5 @@ npx lexa-index --version
 ```
 
 No Rust compiler is required. npm selects a native package for macOS ARM64,
-macOS x64, Linux x64, or Windows x64. The existing curl and PowerShell
-installers remain supported.
+macOS x64, or Linux x64. Windows remains supported through the existing
+PowerShell installer; the curl installer remains supported on macOS and Linux.

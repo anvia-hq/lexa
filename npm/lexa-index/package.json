@@ -26,8 +26,7 @@
   "optionalDependencies": {
     "lexa-index-darwin-arm64": "0.10.0",
     "lexa-index-darwin-x64": "0.10.0",
-    "lexa-index-linux-x64": "0.10.0",
-    "lexa-index-win32-x64": "0.10.0"
+    "lexa-index-linux-x64": "0.10.0"
   },
   "repository": {
     "type": "git",

@@ -360,9 +360,6 @@ jobs:
           - name: Linux x64
             os: ubuntu-latest
             package: lexa-index-linux-x64
-          - name: Windows x64
-            os: windows-latest
-            package: lexa-index-win32-x64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout

@@ -7,7 +7,6 @@ export const PLATFORM_PACKAGES = Object.freeze({
   "darwin-arm64": "lexa-index-darwin-arm64",
   "darwin-x64": "lexa-index-darwin-x64",
   "linux-x64": "lexa-index-linux-x64",
-  "win32-x64": "lexa-index-win32-x64",
 });
 
 export function binarySpecifier(platform = process.platform, architecture = process.arch) {
