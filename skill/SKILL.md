@@ -16,6 +16,7 @@ Lexa is not a compiler, typechecker, linter, formatter, or test runner. Use it t
 - Index before relying on graph answers. Run `lexa status`; if missing or stale, run `lexa index .`.
 - Re-index after substantial edits when later Lexa queries must reflect new code.
 - Scope searches with `--path-prefix`, `--path-glob`, `--language`, `--max`, or focused queries whenever possible.
+- Use `lexa trace-deps <path>` to inspect what the target imports. Use `--reverse` (or `-r`) to find files that import the target, and add `--transitive` (or `-t`) only for recursive impact. The CLI does not accept `--direction`; MCP uses `direction: "depends_on"` or `"imported_by"`.
 - Treat Lexa output as graph-derived context. If files changed outside Lexa and the graph was not refreshed, mention possible staleness.
 - Use `rg` or normal filesystem tools for raw grep behavior, unindexed generated files, ignored files, or one-off exact text checks.
 - Follow the host agent's editing rules. When using Lexa edits, read first, use hashes, dry-run range-sensitive patches, then verify.
@@ -63,9 +64,11 @@ lexa text-search "<literal text>" --scope --compact --path-glob "**/*.ts"
 lexa outline <path>
 lexa read <path> -L 20-80 --compact --hash
 lexa trace-deps <path>
+lexa trace-deps <path> --reverse
+lexa trace-deps <path> --reverse --transitive
 ```
 
-Use `brief` early when the task is implementation-oriented, such as "create agent tool", "add repository guidance", or "wire payment provider". A good `brief` query includes at least one symbol, path fragment, module name, or exact domain keyword. If `brief` returns low confidence, follow its next steps with `path-search`, `symbol-search`, or `text-search` instead of guessing.
+Use `brief` early when the task is implementation-oriented, such as "create agent tool", "add repository guidance", or "wire payment provider". A good `brief` query includes at least one symbol, path fragment, module name, or exact domain keyword. Treat its output as ranked candidates, not an exhaustive answer. Follow low-confidence next steps, and verify critical or missing paths with `symbol-defs`, `text-search`, `outline`, or direct reads even when confidence is high.
 
 ## Choosing Tools
 
@@ -81,7 +84,8 @@ Use `brief` early when the task is implementation-oriented, such as "create agen
 | Non-definition call sites | `callers` |
 | Literal or regex text | `text-search` |
 | Task-focused context bundle | `brief` |
-| Import/dependency impact | `trace-deps` |
+| Imports used by a file | `trace-deps <path>` |
+| Files affected by editing a file | `trace-deps <path> --reverse`; add `--transitive` for recursive impact |
 | Review-oriented structural risk | `audit` |
 | Composed query in one call | `pipeline` |
 | Safe line read/edit/create | `read`, `patch`, `create` |
@@ -160,6 +164,8 @@ Inspect dependency impact before editing:
 ```bash
 lexa outline packages/core/src/agent/agent.ts
 lexa trace-deps packages/core/src/agent/agent.ts
+lexa trace-deps packages/core/src/agent/agent.ts --reverse
+lexa trace-deps packages/core/src/agent/agent.ts --reverse --transitive
 lexa pipeline 'glob packages/core/**/*.ts | search Agent | limit 8'
 ```
 
@@ -282,6 +288,7 @@ Example MCP tool arguments:
 | `word_refs` | `{"word":"Agent","path_prefix":"packages/core","max_results":25}` |
 | `read` | `{"path":"packages/core/src/agent/agent.ts","line_start":1,"line_end":80,"compact":true}` |
 | `patch` | `{"path":"packages/core/src/agent/agent.ts","op":"replace","range_start":42,"range_end":44,"if_hash":"<hash>","content":"<new content>","dry_run":true}` |
+| `trace_deps` | `{"path":"packages/core/src/agent/agent.ts","direction":"imported_by","transitive":true}` |
 | `audit` | `{"since":"main","max_results":25}` |
 
 MCP tools exposed by Lexa:
@@ -340,9 +347,10 @@ CI-style non-zero exit on high-severity structural findings.
 Use `--include dead-code` only when the user explicitly wants unused-code
 candidates; treat those findings as candidates, not removal instructions.
 Audit findings include `actionability` and `next_steps`. Treat `actionable` as a
-likely refactor target, `candidate` as verify-before-change, `expected` as normal
+prioritized review candidate, `candidate` as verify-before-change, `expected` as normal
 shared infrastructure or composition-root coupling, and `risk_note` as edit with
-care but do not assume refactoring is needed.
+care but do not assume refactoring is needed. Inspect the reported code and run
+the relevant compiler, linter, and tests before changing or removing anything.
 
 Human-readable audit output is grouped by actionability. Treat `secondary`
 findings as supporting context for a stronger finding on the same file, not a
@@ -392,7 +400,8 @@ cargo build --locked
 - Cite paths and line ranges from Lexa results when explaining findings.
 - Keep searches scoped with `--path-glob`, `--max`, or focused queries when possible.
 - Report whether context came from `brief`, `audit`, symbol tools, direct reads, or raw search when that distinction matters.
-- Do not treat `brief` confidence as proof of correctness. Use it to prioritize what to inspect next.
-- Do not treat a clean `audit` as a passing build or test result.
+- Do not treat `brief` confidence as proof of correctness or absence. Verify critical paths with focused searches or direct reads.
+- Treat `trace-deps` as graph-derived evidence; verify critical relationships against imports or direct reads.
+- Treat every `audit` finding as a review candidate until verified, and never treat a clean audit as a passing build or test result.
 - Re-index after substantial file edits if later Lexa queries must reflect the new state.
 - Mention when a result comes from the graph and may be stale because the project has not been re-indexed.

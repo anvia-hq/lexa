@@ -201,6 +201,15 @@ pub(crate) fn parse_line_range(range: &str) -> Result<(Option<u32>, Option<u32>)
 }
 
 pub(crate) fn print_agent_result(value: serde_json::Value) -> Result<()> {
+    // The real-repository accuracy runner needs the full, non-deduplicated
+    // command payload for scoring. Keep this process-local hook out of the CLI
+    // surface; normal users and agents continue to receive TOON.
+    if std::env::var_os("LEXA_INTERNAL_BENCHMARK_JSON").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        println!("{}", serde_json::to_string(&value)?);
+        return Ok(());
+    }
     println!("{}", agent_toon(&current_command_tool(), value)?);
     Ok(())
 }

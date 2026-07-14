@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "dataset_version": "pilot-v1",
+  "historical_tasks_per_repo": 20,
+  "repositories": [
+    {
+      "id": "typescript-app",
+      "path": "/absolute/path/to/typescript-app",
+      "ref": "HEAD",
+      "languages": ["typescript"],
+      "source_extensions": ["ts", "tsx"],
+      "verification_commands": [
+        ["pnpm", "typecheck"]
+      ]
+    },
+    {
+      "id": "rust-app",
+      "path": "/absolute/path/to/rust-app",
+      "ref": "HEAD",
+      "languages": ["rust"],
+      "source_extensions": ["rs"],
+      "verification_commands": [
+        ["cargo", "test", "--locked"]
+      ]
+    }
+  ]
+}

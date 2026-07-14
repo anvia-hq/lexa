@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod accuracy;
+
 const START: &str = "<!-- TOOLS START -->\n";
 const END: &str = "<!-- TOOLS END -->\n";
 
@@ -30,10 +32,11 @@ struct CriterionMean {
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
-        bail!("usage: xtask <gen-skill [--check] | perf-gate>");
+        bail!("usage: xtask <accuracy-bench <prepare|run> | gen-skill [--check] | perf-gate>");
     };
 
     match command.as_str() {
+        "accuracy-bench" => accuracy::dispatch(args.collect()),
         "gen-skill" => match args.collect::<Vec<_>>().as_slice() {
             [] => gen_skill(false),
             [flag] if flag == "--check" => gen_skill(true),
