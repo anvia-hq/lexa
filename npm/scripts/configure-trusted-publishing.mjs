@@ -19,7 +19,8 @@ if (version[0] < 11 || (version[0] === 11 && version[1] < 15)) {
 }
 
 for (const { name } of packageDefinitions) {
-  const existing = JSON.parse(npm(["trust", "list", name, "--json"], true));
+  const output = npm(["trust", "list", name, "--json"], true).trim();
+  const existing = output.length === 0 ? [] : JSON.parse(output);
   if (Array.isArray(existing) ? existing.length > 0 : Object.keys(existing).length > 0) {
     const encoded = JSON.stringify(existing);
     if (!encoded.includes("anvia-hq/lexa") || !encoded.includes("release.yml")) {
