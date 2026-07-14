@@ -51,7 +51,7 @@ Use Lexa as the project map, not as the final verifier:
 2. Start with `lexa brief "<task>" --path-prefix <scope>` for task-focused context.
 3. Narrow with `symbol-search`, `symbol-defs`, `word-refs`, `callers`, `text-search`, and `outline`.
 4. Read small ranges with `lexa read <path> -L <start>-<end> --compact --hash`.
-5. Inspect impact with `trace-deps`, `pipeline`, and `audit`.
+5. Inspect outgoing imports with `trace-deps <path>` and affected importers with `trace-deps <path> --reverse`; add `--transitive` for recursive impact.
 6. For small line edits, use `patch --if-hash` and dry-run first.
 7. Run the project's normal tests, typechecks, linters, or build before calling the work done.
 
@@ -65,9 +65,12 @@ Common agent commands:
 | References and calls | `lexa word-refs <word>`, `lexa callers <name>` |
 | Source text | `lexa text-search "<query>" --scope --compact` |
 | File structure | `lexa outline <path>` |
-| Dependency impact | `lexa trace-deps <path>` |
-| Review signal | `lexa audit --max 25` |
+| Dependencies used by a file | `lexa trace-deps <path>` |
+| Files affected by a change | `lexa trace-deps <path> --reverse` |
+| Review candidates | `lexa audit --max 25` |
 | Safe reads/edits | `lexa read --hash`, `lexa patch --if-hash --dry-run` |
+
+Treat `brief`, `trace-deps`, and `audit` as graph-derived candidates. Verify critical paths and findings with focused searches, direct reads, and the project's normal checks.
 
 ## MCP For Agents
 
@@ -133,6 +136,11 @@ envelope only.
 | Retrieval | dependencies | `trace_deps` | grep imports/requires plus candidate file read | 32 | 113 | 71.7% | true |
 | Retrieval | brief | `brief` | grep query terms plus candidate file reads | 220 | 2445 | 91.0% | true |
 | Retrieval | composed query | `pipeline` | grep symbol name plus candidate file reads | 132 | 945 | 86.0% | true |
+
+For accuracy testing against pinned real repositories, including audit
+false-positive review and mutation recall, see
+[docs/accuracy-benchmark.md](docs/accuracy-benchmark.md). The real-repository
+corpus remains local and is driven through the internal `xtask` runner.
 
 ## Website
 
