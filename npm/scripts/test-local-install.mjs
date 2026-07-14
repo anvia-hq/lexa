@@ -19,7 +19,9 @@ import {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
-    shell: process.platform === "win32",
+    // Windows command shims need cmd.exe, but native executables do not. Running
+    // `node --eval` through a shell corrupts the ESM source's quotes.
+    shell: process.platform === "win32" && command.toLowerCase().endsWith(".cmd"),
     ...options,
   });
   if (result.status !== 0) {
