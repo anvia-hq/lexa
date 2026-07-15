@@ -251,4 +251,33 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn transitive_traversal_keeps_forward_and_reverse_directions_separate() {
+        let mut graph = DepGraph::new();
+        graph.set_resolution(
+            "src/consumer.ts",
+            vec!["src/index.ts".to_string()],
+            Vec::new(),
+        );
+        graph.set_resolution(
+            "src/index.ts",
+            vec!["src/client.ts".to_string()],
+            Vec::new(),
+        );
+        graph.set_resolution(
+            "src/client.ts",
+            vec!["src/definitions.ts".to_string()],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            graph.get_transitive("src/index.ts", false),
+            vec!["src/client.ts", "src/definitions.ts"]
+        );
+        assert_eq!(
+            graph.get_transitive("src/index.ts", true),
+            vec!["src/consumer.ts"]
+        );
+    }
 }

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::path::Path;
 use std::process::Command;
 
 fn lexa() -> Command {
@@ -9,6 +10,22 @@ fn lexa() -> Command {
 
 fn parse_toon_output(output: &[u8]) -> Value {
     toon_format::decode_default(String::from_utf8_lossy(output).as_ref()).unwrap()
+}
+
+fn run_json(project: &Path, args: &[&str]) -> Value {
+    let output = lexa()
+        .current_dir(project)
+        .env("LEXA_INTERNAL_BENCHMARK_JSON", "1")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "lexa {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[test]
@@ -204,6 +221,61 @@ fn audit_requires_indexed_files() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no files indexed"));
+}
+
+#[test]
+fn typescript_barrel_dependencies_never_follow_consumers() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path();
+    let src = project.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("definitions.ts"),
+        "export const definition = 'definition';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("client.ts"),
+        "import type { ConsumerOptions } from '@fixture/consumer';\nimport type { ConsumerPlugin } from 'consumer';\nimport { definition } from './definitions.js';\nexport const client = definition;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("index.ts"),
+        "export { client } from './client.js';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("consumer.ts"),
+        "import { client } from './index.js';\nexport const useClient = client;\n",
+    )
+    .unwrap();
+
+    run_json(project, &["index", "."]);
+
+    let barrel_direct = run_json(project, &["trace-deps", "src/index.ts"]);
+    assert_eq!(barrel_direct["dependencies"], json!(["src/client.ts"]));
+
+    let client_direct = run_json(project, &["trace-deps", "src/client.ts"]);
+    assert_eq!(client_direct["dependencies"], json!(["src/definitions.ts"]));
+
+    let barrel_transitive = run_json(project, &["trace-deps", "src/index.ts", "--transitive"]);
+    assert_eq!(
+        barrel_transitive["dependencies"],
+        json!(["src/client.ts", "src/definitions.ts"])
+    );
+
+    let consumer_transitive = run_json(project, &["trace-deps", "src/consumer.ts", "--transitive"]);
+    assert_eq!(
+        consumer_transitive["dependencies"],
+        json!(["src/index.ts", "src/client.ts", "src/definitions.ts"])
+    );
+
+    let audit = run_json(project, &["audit", "--max", "20"]);
+    assert!(audit["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|finding| finding["rule"] != "architecture.cycle"));
 }
 
 #[test]

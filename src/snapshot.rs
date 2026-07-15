@@ -10,7 +10,8 @@ use crate::types::{
 };
 
 const MAGIC: &[u8; 8] = b"LEXA\0\0\0\0";
-const FORMAT_VERSION: u16 = 3;
+const FORMAT_VERSION: u16 = 4;
+const HYDRATED_V3_FORMAT_VERSION: u16 = 3;
 const BINARY_V1_FORMAT_VERSION: u16 = 1;
 const CHECKSUM_V2_FORMAT_VERSION: u16 = 2;
 const MAX_SNAPSHOT_BYTES: usize = 500 * 1024 * 1024;
@@ -29,10 +30,11 @@ pub struct SnapshotData {
     forward_deps: Vec<(String, Vec<String>)>,
     unresolved_imports: Vec<(String, Vec<UnresolvedImport>)>,
     indexes: Option<EngineIndexSnapshot>,
+    rebuild_dependencies: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SnapshotPayloadV3 {
+struct HydratedSnapshotPayload {
     created_at: u64,
     outlines: Vec<(String, FileOutline)>,
     file_meta: Vec<(String, FileMeta)>,
@@ -80,7 +82,7 @@ pub fn write_snapshot(engine: &Engine, output_path: impl AsRef<Path>) -> Result<
     let indexes = data
         .indexes
         .context("Current snapshots require hydrated engine indexes")?;
-    let payload = SnapshotPayloadV3 {
+    let payload = HydratedSnapshotPayload {
         created_at,
         outlines: data.outlines,
         file_meta: data.file_meta,
@@ -100,8 +102,14 @@ pub fn write_snapshot(engine: &Engine, output_path: impl AsRef<Path>) -> Result<
     }
 
     let tmp_path = temp_snapshot_path(path);
-    let write_result =
-        write_snapshot_file(&tmp_path, file_count, created_at, &payload_hash, &encoded);
+    let write_result = write_snapshot_file(
+        &tmp_path,
+        FORMAT_VERSION,
+        file_count,
+        created_at,
+        &payload_hash,
+        &encoded,
+    );
     if let Err(err) = write_result {
         let _ = fs::remove_file(&tmp_path);
         return Err(err);
@@ -116,6 +124,7 @@ pub fn write_snapshot(engine: &Engine, output_path: impl AsRef<Path>) -> Result<
 
 fn write_snapshot_file(
     path: &Path,
+    version: u16,
     file_count: u32,
     created_at: u64,
     payload_hash: &[u8; 32],
@@ -131,7 +140,7 @@ fn write_snapshot_file(
         .write_all(MAGIC)
         .context("Failed to write snapshot magic")?;
     writer
-        .write_all(&FORMAT_VERSION.to_le_bytes())
+        .write_all(&version.to_le_bytes())
         .context("Failed to write snapshot version")?;
     writer
         .write_all(&file_count.to_le_bytes())
@@ -208,7 +217,7 @@ fn read_header_prefixed_snapshot(mut reader: BufReader<fs::File>) -> Result<Snap
             let payload = decode_v1_v2_payload(version, legacy_hash, &encoded)?;
             snapshot_from_v2_payload(file_count, payload)
         }
-        FORMAT_VERSION => {
+        HYDRATED_V3_FORMAT_VERSION | FORMAT_VERSION => {
             let mut expected_hash = [0u8; 32];
             reader
                 .read_exact(&mut expected_hash)
@@ -222,8 +231,8 @@ fn read_header_prefixed_snapshot(mut reader: BufReader<fs::File>) -> Result<Snap
                     hex_hash(&actual_hash)
                 );
             }
-            let payload: SnapshotPayloadV3 =
-                postcard::from_bytes(&encoded).context("Failed to deserialize v3 snapshot")?;
+            let payload: HydratedSnapshotPayload = postcard::from_bytes(&encoded)
+                .with_context(|| format!("Failed to deserialize v{version} snapshot"))?;
             if payload.file_meta.len() != file_count as usize {
                 anyhow::bail!(
                     "Snapshot file count mismatch: header {file_count}, payload {}",
@@ -238,6 +247,7 @@ fn read_header_prefixed_snapshot(mut reader: BufReader<fs::File>) -> Result<Snap
                 forward_deps: payload.forward_deps,
                 unresolved_imports: payload.unresolved_imports,
                 indexes: Some(payload.indexes),
+                rebuild_dependencies: version == HYDRATED_V3_FORMAT_VERSION,
             })
         }
         _ => anyhow::bail!("Unsupported snapshot version {version}"),
@@ -281,6 +291,7 @@ fn snapshot_from_v2_payload(file_count: u32, payload: SnapshotPayloadV2) -> Resu
         forward_deps: payload.forward_deps,
         unresolved_imports: Vec::new(),
         indexes: None,
+        rebuild_dependencies: false,
     })
 }
 
@@ -319,6 +330,7 @@ fn read_v09_snapshot(mut reader: BufReader<fs::File>, len_bytes: [u8; 8]) -> Res
         forward_deps: snapshot.forward_deps,
         unresolved_imports: Vec::new(),
         indexes: None,
+        rebuild_dependencies: false,
     })
 }
 
@@ -378,7 +390,11 @@ pub fn load_snapshot_into_engine(engine: &mut Engine, path: impl AsRef<Path>) ->
     let path = path.as_ref();
     let snapshot = read_snapshot(path)?;
     let count = snapshot.header.file_count as usize;
+    let rebuild_dependencies = snapshot.rebuild_dependencies;
     engine.load_snapshot_data(snapshot.into_engine_data());
+    if rebuild_dependencies {
+        engine.rebuild_dep_graph_after_batch();
+    }
     engine.set_freshness_watermark(snapshot_modified_ns(path));
     Ok(count)
 }
@@ -422,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_round_trip_uses_v3_with_full_blake3_hash() {
+    fn snapshot_round_trip_uses_v4_with_full_blake3_hash() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.lexa");
         write_snapshot(&sample_engine(), &path).unwrap();
@@ -442,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_v3_rejects_payload_corruption() {
+    fn snapshot_v4_rejects_payload_corruption() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.lexa");
         write_snapshot(&sample_engine(), &path).unwrap();
@@ -456,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_v3_preserves_unresolved_imports_without_reresolving() {
+    fn snapshot_v4_preserves_unresolved_imports_without_reresolving() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.lexa");
         let mut engine = Engine::new(4);
@@ -472,6 +488,51 @@ mod tests {
         let unresolved = loaded.get_unresolved_imports("src/app.ts");
         assert_eq!(unresolved.len(), 1);
         assert_eq!(unresolved[0].import, "./missing");
+    }
+
+    #[test]
+    fn snapshot_v3_rebuilds_dependencies_with_current_resolution_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.lexa");
+        let mut engine = Engine::new(4);
+        engine.index_file(
+            "src/definitions.ts",
+            "export const definition = 'definition';\n",
+        );
+        engine.index_file(
+            "src/client.ts",
+            "import type { ConsumerOptions } from '@fixture/consumer';\nimport { definition } from './definitions.js';\nexport const client = definition;\n",
+        );
+        engine.index_file("src/index.ts", "export { client } from './client.js';\n");
+        engine.index_file(
+            "src/consumer.ts",
+            "import { client } from './index.js';\nexport const useClient = client;\n",
+        );
+
+        let mut data = engine.to_snapshot_data();
+        let client_deps = data
+            .forward_deps
+            .iter_mut()
+            .find_map(|(path, deps)| (path == "src/client.ts").then_some(deps))
+            .unwrap();
+        *client_deps = vec![
+            "src/consumer.ts".to_string(),
+            "src/definitions.ts".to_string(),
+        ];
+        write_hydrated_snapshot_fixture(&path, HYDRATED_V3_FORMAT_VERSION, data);
+
+        let mut loaded = Engine::new(4);
+        load_snapshot_into_engine(&mut loaded, &path).unwrap();
+
+        assert_eq!(
+            loaded.get_depends_on("src/client.ts"),
+            vec!["src/definitions.ts"]
+        );
+        assert_eq!(
+            loaded.get_transitive_depends_on("src/index.ts"),
+            vec!["src/client.ts", "src/definitions.ts"]
+        );
+        assert!(!loaded.find_symbol("useClient").is_empty());
     }
 
     #[test]
@@ -592,5 +653,21 @@ mod tests {
         file.write_all(&(encoded.len() as u64).to_le_bytes())
             .unwrap();
         file.write_all(encoded).unwrap();
+    }
+
+    fn write_hydrated_snapshot_fixture(path: &Path, version: u16, data: EngineSnapshotData) {
+        let file_count = data.file_meta.len() as u32;
+        let payload = HydratedSnapshotPayload {
+            created_at: 1,
+            outlines: data.outlines,
+            file_meta: data.file_meta,
+            contents: data.contents,
+            forward_deps: data.forward_deps,
+            unresolved_imports: data.unresolved_imports,
+            indexes: data.indexes.unwrap(),
+        };
+        let encoded = postcard::to_allocvec(&payload).unwrap();
+        let payload_hash = *blake3::hash(&encoded).as_bytes();
+        write_snapshot_file(path, version, file_count, 1, &payload_hash, &encoded).unwrap();
     }
 }

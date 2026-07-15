@@ -17,6 +17,8 @@ pub(crate) fn resolve_imports(
     for import in imports {
         if language == Language::Rust {
             deps.extend(resolve_rust_import(file_meta, path, import));
+        } else if !should_resolve_as_local_dependency(import, language) {
+            continue;
         } else {
             let terms = import_terms(import);
             if let Some(candidate) = resolve_generic_import_terms(file_meta, path, &terms) {
@@ -31,6 +33,11 @@ pub(crate) fn resolve_imports(
     unresolved.sort();
     unresolved.dedup();
     ImportResolution { deps, unresolved }
+}
+
+fn should_resolve_as_local_dependency(import: &str, language: Language) -> bool {
+    !matches!(language, Language::JavaScript | Language::TypeScript)
+        || is_explicit_local_import_term(import.trim())
 }
 
 fn resolve_generic_import(
@@ -53,7 +60,7 @@ fn resolve_generic_import_terms(
 
     let local_terms = terms
         .iter()
-        .filter(|term| is_local_import_term(term))
+        .filter(|term| is_explicit_local_import_term(term))
         .cloned()
         .collect::<Vec<_>>();
     let exact_terms = if local_terms.is_empty() {
@@ -207,12 +214,15 @@ fn import_terms(import: &str) -> Vec<String> {
     expanded
 }
 
-fn is_local_import_term(term: &str) -> bool {
-    term.starts_with("./") || term.starts_with("../")
+fn is_explicit_local_import_term(term: &str) -> bool {
+    matches!(term, "." | "..")
+        || term.starts_with("./")
+        || term.starts_with("../")
+        || term.starts_with('/')
 }
 
 fn is_local_generic_import(terms: &[String]) -> bool {
-    terms.iter().any(|term| is_local_import_term(term))
+    terms.iter().any(|term| is_explicit_local_import_term(term))
 }
 
 fn rust_import_module_path_groups(importer_path: &str, import: &str) -> Vec<(String, Vec<String>)> {
@@ -521,7 +531,7 @@ fn normalize_import_term(term: &str) -> String {
         .trim_matches('}')
         .replace("::", "/");
 
-    if normalized.starts_with("./") || normalized.starts_with("../") {
+    if is_explicit_local_import_term(&normalized) {
         strip_import_resource_suffix(&normalized).to_string()
     } else {
         normalized.replace('.', "/")
@@ -598,7 +608,12 @@ fn exact_import_candidates(importer_path: &str, term: &str) -> Vec<(i32, String)
 }
 
 fn resolve_relative_import_base(importer_path: &str, term: &str) -> Option<String> {
-    if !term.starts_with("./") && !term.starts_with("../") {
+    if let Some(rooted) = term.strip_prefix('/') {
+        let rooted = rooted.trim_matches('/');
+        return (!rooted.is_empty()).then(|| rooted.to_string());
+    }
+
+    if !is_explicit_local_import_term(term) {
         return None;
     }
 
@@ -740,4 +755,85 @@ fn typescript_source_extensions_for_runtime_import(
         return Some((stem, &["cts"]));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn javascript_dependency_resolution_only_accepts_explicit_local_specifiers() {
+        for import in [
+            ".",
+            "..",
+            "./client.js",
+            "../definitions/index.js",
+            "/src/root.js",
+        ] {
+            assert!(should_resolve_as_local_dependency(
+                import,
+                Language::TypeScript
+            ));
+            assert!(should_resolve_as_local_dependency(
+                import,
+                Language::JavaScript
+            ));
+        }
+
+        for import in [
+            "core",
+            "@fixture/core",
+            "@fixture/core/subpath",
+            "node:fs",
+            "#internal",
+            "src/aliased/core",
+        ] {
+            assert!(!should_resolve_as_local_dependency(
+                import,
+                Language::TypeScript
+            ));
+            assert!(!should_resolve_as_local_dependency(
+                import,
+                Language::JavaScript
+            ));
+        }
+
+        assert!(should_resolve_as_local_dependency(
+            "package.module",
+            Language::Python
+        ));
+    }
+
+    #[test]
+    fn javascript_directory_imports_resolve_index_modules() {
+        let metadata = FileMeta {
+            language: Language::TypeScript,
+            line_count: 1,
+            byte_size: 0,
+            symbol_count: 0,
+            modified_ms: 0,
+            indexed: true,
+        };
+        let file_meta: HashMap<String, FileMeta> = [
+            "src/feature/consumer.ts",
+            "src/feature/index.ts",
+            "src/index.ts",
+        ]
+        .into_iter()
+        .map(|path| (path.to_string(), metadata.clone()))
+        .collect();
+
+        let resolution = resolve_imports(
+            "src/feature/consumer.ts",
+            &[".".to_string(), "..".to_string()],
+            Language::TypeScript,
+            &file_meta,
+        );
+
+        assert_eq!(
+            resolution.deps,
+            vec!["src/feature/index.ts", "src/index.ts"]
+        );
+        assert!(resolution.unresolved.is_empty());
+    }
 }
