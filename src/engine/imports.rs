@@ -215,7 +215,10 @@ fn import_terms(import: &str) -> Vec<String> {
 }
 
 fn is_explicit_local_import_term(term: &str) -> bool {
-    term.starts_with("./") || term.starts_with("../") || term.starts_with('/')
+    matches!(term, "." | "..")
+        || term.starts_with("./")
+        || term.starts_with("../")
+        || term.starts_with('/')
 }
 
 fn is_local_generic_import(terms: &[String]) -> bool {
@@ -610,7 +613,7 @@ fn resolve_relative_import_base(importer_path: &str, term: &str) -> Option<Strin
         return (!rooted.is_empty()).then(|| rooted.to_string());
     }
 
-    if !term.starts_with("./") && !term.starts_with("../") {
+    if !is_explicit_local_import_term(term) {
         return None;
     }
 
@@ -760,7 +763,13 @@ mod tests {
 
     #[test]
     fn javascript_dependency_resolution_only_accepts_explicit_local_specifiers() {
-        for import in ["./client.js", "../definitions/index.js", "/src/root.js"] {
+        for import in [
+            ".",
+            "..",
+            "./client.js",
+            "../definitions/index.js",
+            "/src/root.js",
+        ] {
             assert!(should_resolve_as_local_dependency(
                 import,
                 Language::TypeScript
@@ -793,5 +802,38 @@ mod tests {
             "package.module",
             Language::Python
         ));
+    }
+
+    #[test]
+    fn javascript_directory_imports_resolve_index_modules() {
+        let metadata = FileMeta {
+            language: Language::TypeScript,
+            line_count: 1,
+            byte_size: 0,
+            symbol_count: 0,
+            modified_ms: 0,
+            indexed: true,
+        };
+        let file_meta: HashMap<String, FileMeta> = [
+            "src/feature/consumer.ts",
+            "src/feature/index.ts",
+            "src/index.ts",
+        ]
+        .into_iter()
+        .map(|path| (path.to_string(), metadata.clone()))
+        .collect();
+
+        let resolution = resolve_imports(
+            "src/feature/consumer.ts",
+            &[".".to_string(), "..".to_string()],
+            Language::TypeScript,
+            &file_meta,
+        );
+
+        assert_eq!(
+            resolution.deps,
+            vec!["src/feature/index.ts", "src/index.ts"]
+        );
+        assert!(resolution.unresolved.is_empty());
     }
 }
